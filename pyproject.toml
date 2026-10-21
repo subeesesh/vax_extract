@@ -1,0 +1,34 @@
+[project]
+name = "vaxextract"
+version = "0.1.0"
+description = "Cost-efficient veterinary vaccination document extractor (OCR/text-layer + small LLM + deterministic post-processing)"
+requires-python = ">=3.10"
+dependencies = [
+  "pydantic>=2.5",
+  "httpx>=0.27",
+  "pymupdf>=1.24",
+  "pillow>=10",
+  "numpy>=1.24",
+  "opencv-python-headless>=4.8",
+  "openpyxl>=3.1",
+]
+
+[project.optional-dependencies]
+rapid = ["rapidocr>=3.0", "onnxruntime>=1.17"]
+paddle = ["paddleocr>=2.7", "paddlepaddle>=2.6"]
+tesseract = ["pytesseract>=0.3.10"]
+web = ["fastapi>=0.110", "uvicorn>=0.29", "python-multipart>=0.0.9"]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["vaxextract"]
+
+[tool.setuptools.package-data]
+vaxextract = ["static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

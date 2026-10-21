@@ -1,0 +1,15 @@
+# secrets
+.env
+
+# environment / caches
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+
+# real client documents and results (owner/pet personal data)
+dataset/
+results/
+*.xlsx
+~$*

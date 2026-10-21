@@ -1,0 +1,19 @@
+{
+  "data": {
+    "pets": [
+      {
+        "name": "",
+        "vaccinations": [
+          {
+            "partialMatch": ,
+            "matchedComponents": ,
+            "name": ,
+            "expirationDate": ,
+            "needsHumanReview": ,
+          },
+          
+        ]
+      }
+    ],
+  }
+}

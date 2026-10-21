@@ -1,0 +1,16 @@
+{"targets": ["Rabies", "DHPP", "Lepto", "Bordetella"],
+ "pets": [{"name": "Rubi", "events": [
+ {"target": "Rabies", "dateAdministered": "2026-02-19", "dueDate": "2029-02-18"},
+ {"target": "DHPP", "dateAdministered": "2026-02-19", "dueDate": "2029-02-18"},
+ {"target": "Lepto", "dateAdministered": "2026-02-19", "dueDate": "2027-02-19"},
+ {"target": "Bordetella", "dateAdministered": "2026-02-19", "dueDate": "2027-02-19"},
+ {"target": "Lepto", "dateAdministered": "2025-02-11", "dueDate": "2026-02-11"},
+ {"target": "Bordetella", "dateAdministered": "2025-02-11", "dueDate": "2026-02-11"},
+ {"target": "Rabies", "dateAdministered": "2022-03-24", "dueDate": "2023-03-24"},
+ {"target": "DHPP", "dateAdministered": "2022-03-24", "dueDate": null},
+ {"target": "Lepto", "dateAdministered": "2022-03-24", "dueDate": null},
+ {"target": "DHPP", "dateAdministered": "2022-02-10", "dueDate": null},
+ {"target": "Lepto", "dateAdministered": "2022-02-10", "dueDate": null},
+ {"target": "Bordetella", "dateAdministered": "2022-02-10", "dueDate": null},
+ {"target": "DHPP", "dateAdministered": "2022-01-10", "dueDate": null}
+]}]}
