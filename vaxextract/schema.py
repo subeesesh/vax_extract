@@ -27,6 +27,8 @@ class Party(_Lenient):
     name: Optional[str] = None
     address: Optional[str] = None
     phone: Optional[str] = None
+    email: Optional[str] = None
+    website: Optional[str] = None
     licenseNumber: Optional[str] = None
 
 
@@ -128,6 +130,7 @@ class Pet(BaseModel):
     vaccinations: list[Vaccination] = Field(default_factory=list)
     events: list[VaccinationEvent] = Field(default_factory=list)
     diagnosticTests: list[DiagnosticTest] = Field(default_factory=list)
+    printedRows: list[VaccinationEvent] = Field(default_factory=list)  # (row x name) before merge/join; slim output
 
 
 class Data(BaseModel):
@@ -161,34 +164,85 @@ class Result(BaseModel):
     meta: Meta = Field(default_factory=Meta)
 
     def to_output(self) -> dict:
-        """The slim client payload (final_json_format.txt); empty expirationDate is omitted."""
+        """The slim client payload: one vaccination per printed row (name as printed), owner/clinic/veterinarian
+        and run stats; empty fields are omitted."""
         return OutputResult(data=OutputData(pets=[
-            OutputPet(name=p.name, vaccinations=[
-                OutputVaccination(
-                    partialMatch=v.partialMatch,
-                    matchedComponents=[c.extractedName for c in v.matchedComponents] if v.partialMatch else [],
-                    name=v.name, expirationDate=v.expirationDate, needsHumanReview=v.needsHumanReview)
-                for v in p.vaccinations])
-            for p in self.data.pets])).model_dump(exclude_none=True)
+            OutputPet(**{k: getattr(p, k) for k in _PET_FIELDS}, vaccinations=_printed_rows(p.printedRows))
+            for p in self.data.pets],
+            **{k: _party(getattr(self.data, k)) for k in ("owner", "clinic", "veterinarian")}),
+            duration=self.duration, tokenUsage=self.tokenUsage, usedFallback=self.usedFallback,
+        ).model_dump(exclude_none=True)
 
 
 # ---------- slim client payload (final_json_format.txt) ----------
 class OutputVaccination(BaseModel):
     partialMatch: bool = False
-    matchedComponents: list[str] = Field(default_factory=list)  # printed names, only for a partial match
+    matchedComponents: list[str] = Field(default_factory=list)  # requested names, only for a partial match
     name: str
+    dateAdministered: Optional[str] = None
     expirationDate: Optional[str] = None
     needsHumanReview: bool = False
 
 
+def _printed_rows(events: list[VaccinationEvent]) -> list[OutputVaccination]:
+    """Events are (printed row x requested name); fold them back to one entry per printed row.
+    A combination row whose components expire at different dates gets the earliest one as its expiry.
+    partialMatch: every requested name the row matched, it covers only partly; matchedComponents lists those names."""
+    rows: dict = {}
+    for e in events:  # undated-given (reminder) rows stay apart by due date
+        rows.setdefault((e.rawName, e.dateAdministered, None if e.dateAdministered else e.dueDate), []).append(e)
+    out = []
+    for (name, given, _), es in rows.items():
+        due = min((e.dueDate for e in es if e.dueDate), default=None)
+        matched = [e for e in es if e.target]
+        partial = bool(matched) and all(e.partial for e in matched)
+        out.append(OutputVaccination(partialMatch=partial,
+                                     matchedComponents=list(dict.fromkeys(e.target for e in matched)) if partial else [],
+                                     name=name, dateAdministered=given, expirationDate=due,
+                                     needsHumanReview=any(e.needsHumanReview for e in es)))
+    given = sorted((v for v in out if v.dateAdministered), key=lambda v: v.dateAdministered, reverse=True)
+    reminders = sorted((v for v in out if not v.dateAdministered), key=lambda v: v.expirationDate or "9999")
+    return given + reminders  # doses newest first, then reminder-only rows soonest first
+
+
+def _party(p: Optional[Party]) -> Optional[OutputParty]:
+    out = OutputParty(**p.model_dump()) if p else None
+    return out if out and out.model_dump(exclude_none=True) else None  # nothing printed -> omit, not {}
+
+
+_PET_FIELDS = ("name", "species", "breed", "sex", "weight", "color", "microchipNumber")
+
+
 class OutputPet(BaseModel):
     name: Optional[str] = None
+    species: Optional[str] = None
+    breed: Optional[str] = None
+    sex: Optional[str] = None
+    weight: Optional[str] = None
+    color: Optional[str] = None
+    microchipNumber: Optional[str] = None
     vaccinations: list[OutputVaccination] = Field(default_factory=list)
+
+
+class OutputParty(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    name: Optional[str] = None
+    address: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    website: Optional[str] = None
+    licenseNumber: Optional[str] = None
 
 
 class OutputData(BaseModel):
     pets: list[OutputPet] = Field(default_factory=list)
+    owner: Optional[OutputParty] = None
+    clinic: Optional[OutputParty] = None
+    veterinarian: Optional[OutputParty] = None
 
 
 class OutputResult(BaseModel):
     data: OutputData
+    duration: float = 0.0
+    tokenUsage: TokenUsage = Field(default_factory=TokenUsage)
+    usedFallback: bool = False

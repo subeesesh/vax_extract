@@ -13,3 +13,6 @@ dataset/
 results/
 *.xlsx
 ~$*
+.vax_cache/
+
+backups/

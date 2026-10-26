@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from typing import Optional
 
@@ -115,7 +115,9 @@ def _build_pet(rp: RawPet, order: str, today: date, targets: list[str], lines: l
 def _merge_dups(evs: list[_Ev]) -> list[_Ev]:
     out: dict = {}
     for e in evs:
-        key = (e.target, e.given, None if e.given else e.due, e.raw_name.lower() if e.target is None else "")
+        undated = e.given is None and e.due is None  # never merge rows just because both lack dates
+        key = (e.target, e.given, None if e.given else e.due,
+               e.raw_name.lower() if e.target is None or undated else "")
         k = out.get(key)
         if k is None:
             out[key] = e
@@ -123,7 +125,10 @@ def _merge_dups(evs: list[_Ev]) -> list[_Ev]:
         if k.due is None and e.due:
             k.due, k.due_src = e.due, e.due_src
         elif e.due and k.due and e.due != k.due:
-            k.reasons.append("conflicting due dates for the same event")
+            if e.raw_name.lower() == k.raw_name.lower():  # same row printed twice with two dates: suspicious
+                k.reasons.append("conflicting due dates for the same event")
+            elif e.due < k.due:  # different products for this name on one day: the earliest expiry wins
+                k.due, k.due_src = e.due, e.due_src
         if e.raw_name != k.raw_name and e.raw_name not in k.also:
             k.also.append(e.raw_name)
         k.partial = k.partial and e.partial
@@ -132,11 +137,11 @@ def _merge_dups(evs: list[_Ev]) -> list[_Ev]:
     return list(out.values())
 
 
-def _join_due(evs: list[_Ev]) -> list[_Ev]:
-    """Attach due-only (reminder) rows to the latest administered event of the same requested name."""
+def _join_due(evs: list[_Ev], key=lambda e: e.target) -> list[_Ev]:
+    """Attach due-only (reminder) rows to the latest administered event with the same key (default: requested name)."""
     by_target: dict = defaultdict(list)
     for e in evs:
-        by_target[e.target].append(e)
+        by_target[key(e)].append(e)
     out: list[_Ev] = []
     for target, items in by_target.items():
         if target is None:
@@ -147,8 +152,11 @@ def _join_due(evs: list[_Ev]) -> list[_Ev]:
         neither = [e for e in items if not e.given and not e.due]
         latest = admin[-1] if admin else None
         remaining = []
+        # a reminder far from the dose's own printed interval is another product sharing the name (Lepto vs DHPP)
+        implied = D.add_months(latest.given, latest.months) if latest and latest.months else None
         for d in due_only:
-            if latest and latest.due is None and d.due > latest.given:
+            fits = implied is None or abs((d.due - implied).days) <= 31
+            if latest and latest.due is None and d.due > latest.given and fits:
                 latest.due, latest.due_src = d.due, "document"
                 latest.evidence = " || ".join(x for x in (latest.evidence, d.evidence) if x)[:400] or None
             elif latest and latest.due == d.due:
@@ -191,11 +199,10 @@ def _rollup(target: str, evs: list[_Ev]) -> Vaccination:
     names = []
     for e in chosen:
         names += [n for n in [e.raw_name, *e.also] if n not in names]
-    dues = {e.due for e in chosen if e.due}
-    head = max(chosen, key=lambda e: (e.due is not None, e.due_src == "document"))
+    # several rows count for this name on that date (e.g. Lepto 1 yr + DHPP 3 yr): the earliest expiry wins
+    dated = [e for e in chosen if e.due]
+    head = min(dated, key=lambda e: (e.due, e.due_src != "document")) if dated else chosen[0]
     reasons = sorted({r for e in chosen for r in e.reasons})
-    if len(dues) > 1:
-        reasons.append("conflicting due dates")
     return Vaccination(
         name=target,
         partialMatch=all(e.partial for e in chosen),
@@ -211,7 +218,16 @@ def _rollup(target: str, evs: list[_Ev]) -> Vaccination:
     )
 
 
+def _event(e: _Ev, is_latest: bool = False) -> VaccinationEvent:
+    return VaccinationEvent(rawName=e.raw_name, target=e.target, partial=e.partial, dateAdministered=_iso(e.given),
+                            dueDate=_iso(e.due), dueDateSource=e.due_src if e.due else None, isLatest=is_latest,
+                            needsHumanReview=bool(e.reasons), reviewReasons=e.reasons, evidence=e.evidence)
+
+
 def _finalize(rp: RawPet, evs: list[_Ev], diags: list[DiagnosticTest], targets: list[str]) -> Pet:
+    # rows as printed: no merging, and a reminder only joins a dose printed under the same name
+    printed = _join_due([replace(e, reasons=list(e.reasons)) for e in evs], key=lambda e: e.raw_name.lower())
+    _derive_and_validate(printed)
     evs = _join_due(_merge_dups(evs))
     _derive_and_validate(evs)
     latest: dict = {}
@@ -223,25 +239,12 @@ def _finalize(rp: RawPet, evs: list[_Ev], diags: list[DiagnosticTest], targets: 
         ti = targets.index(e.target) if e.target in targets else len(targets)
         return (ti, -(e.given.toordinal() if e.given else 0), e.raw_name)
 
-    events = [
-        VaccinationEvent(
-            rawName=e.raw_name,
-            target=e.target,
-            partial=e.partial,
-            dateAdministered=_iso(e.given),
-            dueDate=_iso(e.due),
-            dueDateSource=e.due_src if e.due else None,
-            isLatest=bool(e.target and e.given and latest.get(e.target) == e.given),
-            needsHumanReview=bool(e.reasons),
-            reviewReasons=e.reasons,
-            evidence=e.evidence,
-        )
-        for e in sorted(evs, key=sort_key)
-    ]
+    events = [_event(e, bool(e.target and e.given and latest.get(e.target) == e.given)) for e in sorted(evs, key=sort_key)]
     return Pet(
         name=_clean(rp.name), species=_clean(rp.species), breed=_clean(rp.breed), sex=_clean(rp.sex),
         weight=_clean(rp.weight), color=_clean(rp.color), microchipNumber=_clean(rp.microchipNumber),
         vaccinations=[_rollup(t, evs) for t in targets], events=events, diagnosticTests=diags,
+        printedRows=[_event(e) for e in printed],
     )
 
 

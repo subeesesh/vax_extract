@@ -10,7 +10,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-from .schema import Result
+from .schema import OutputVaccination, Result, Vaccination
 
 log = logging.getLogger(__name__)
 
@@ -27,8 +27,17 @@ def verified_by(model: str, ocr_engine: str) -> str:
     return f"vaxextract ({model} + {OCR_NAMES.get(ocr_engine, ocr_engine)})"
 
 
+def _final_json(v: Vaccination) -> dict:
+    """Per requested name, for the sheet: the latest record it was matched to."""
+    return OutputVaccination(
+        partialMatch=v.partialMatch,
+        matchedComponents=[c.extractedName for c in v.matchedComponents] if v.partialMatch else [],
+        name=v.name, dateAdministered=v.dateAdministered, expirationDate=v.expirationDate,
+        needsHumanReview=v.needsHumanReview).model_dump(exclude_none=True)
+
+
 def rows_for(result: Result, document: str, verified_by: str, created: datetime) -> list[dict]:
-    d, out = result.data, result.to_output()["data"]["pets"]
+    d = result.data
     owner = d.owner.name if d.owner else None
     base = {"POName": owner, "created_on": created, "Document_URL": document, "Verified By": verified_by}
     if not d.pets or not any(p.vaccinations for p in d.pets):
@@ -36,8 +45,8 @@ def rows_for(result: Result, document: str, verified_by: str, created: datetime)
                  "is_verified_by_ai": False,
                  "Results - Comment": "; ".join(["no vaccination rows extracted", *result.meta.reviewReasons])}]
     rows = []
-    for p, slim in zip(d.pets, out):
-        for v, sv in zip(p.vaccinations, slim["vaccinations"]):
+    for p in d.pets:
+        for v in p.vaccinations:
             matched = bool(v.matchedComponents)
             ok = matched and not v.needsHumanReview
             notes = []
@@ -53,7 +62,7 @@ def rows_for(result: Result, document: str, verified_by: str, created: datetime)
                          "Expiration_date": datetime.fromisoformat(v.expirationDate) if v.expirationDate else None,
                          "status": "Verified" if ok else ("Needs review" if matched else "Not found"),
                          "is_verified_by_ai": ok, "Results - Comment": "; ".join(notes + v.reviewReasons),
-                         "final_json": json.dumps(sv, ensure_ascii=False)})
+                         "final_json": json.dumps(_final_json(v), ensure_ascii=False)})
     return rows
 
 

@@ -7,13 +7,14 @@ import sys
 from pathlib import Path
 
 from .eval import evaluate
-from .pipeline import Config, extract_file
+from .pipeline import Config, extract_file, load_dotenv
 from .sheet import update_sheet, verified_by
 
 EXTS = {".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp", ".bmp"}
 
 
 def main(argv=None) -> int:
+    load_dotenv(Path.cwd() / ".env")  # same settings as the server, incl. VAX_SHEET
     ap = argparse.ArgumentParser(prog="vaxextract")
     sub = ap.add_subparsers(dest="cmd", required=True)
     ex = sub.add_parser("extract", help="extract JSON from files/directories")

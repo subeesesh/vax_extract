@@ -15,6 +15,16 @@ from .postprocess import build_data
 from .schema import Data, Meta, Result, TokenUsage
 
 
+def load_dotenv(path: Path) -> None:
+    """KEY=value lines into os.environ; variables already set win."""
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        k, sep, v = line.strip().partition("=")
+        if sep and not k.startswith("#"):
+            os.environ.setdefault(k.strip(), v.strip().strip('"'))
+
+
 @dataclass
 class Config:
     primary: LlmConfig
@@ -27,7 +37,8 @@ class Config:
     def from_env(cls) -> "Config":
         e = os.environ
         primary = LlmConfig(e["VAX_LLM_BASE_URL"], e.get("VAX_LLM_API_KEY", ""), e["VAX_LLM_MODEL"],
-                            reasoning_effort=e.get("VAX_LLM_REASONING_EFFORT") or None)
+                            reasoning_effort=e.get("VAX_LLM_REASONING_EFFORT") or None,
+                            hedge_after=float(e.get("VAX_LLM_HEDGE_SECONDS", "10") or 0))
         fb = None
         if e.get("VAX_FALLBACK_MODEL"):
             fb = LlmConfig(

@@ -120,3 +120,42 @@ def test_extraction_survives_failed_expansion(monkeypatch):
     llm_mod._EXPANSIONS.clear()
     raw, _ = llm_mod.extract(LlmConfig("u", "k", "m2"), "text", targets=["Rabies"])
     assert raw.pets[0].name == "Luna"
+
+
+def test_hedged_request_uses_first_answer(monkeypatch):
+    import threading
+    import time
+
+    import httpx
+
+    calls, release = [], threading.Event()
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        n = len(calls)
+        calls.append(n)
+        if n == 0:  # the first request hangs until the test ends
+            release.wait(5)
+        return httpx.Response(200, json={"choices": [{"message": {"content": f"answer {n}"}}], "usage": {}},
+                              request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(llm_mod.httpx, "post", fake_post)
+    t = time.time()
+    out, _ = llm_mod._post(LlmConfig("http://x", "k", "m", hedge_after=0.05), [{"role": "user", "content": "hi"}])
+    release.set()
+    assert out == "answer 1" and len(calls) == 2 and time.time() - t < 2
+
+
+def test_expansion_cached_on_disk(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_post(cfg, messages, schema=None, fmt="json_schema"):
+        calls.append(1)
+        return '{"names":[{"name":"Rabies","alternatives":[{"label":"Rabies","species":null,"diseases":["Rabies"]}]}]}', {}
+
+    monkeypatch.setattr(llm_mod, "_post", fake_post)
+    monkeypatch.setenv("VAX_EXPANSION_CACHE", str(tmp_path / "exp.json"))
+    llm_mod._EXPANSIONS.clear()
+    a, _ = llm_mod.expand_targets(LlmConfig("u", "k", "m3"), ["Rabies"])
+    llm_mod._EXPANSIONS.clear()  # simulate a restart
+    b, _ = llm_mod.expand_targets(LlmConfig("u", "k", "m3"), ["Rabies"])
+    assert a == b and "Rabies" in a and len(calls) == 1

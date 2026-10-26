@@ -3,9 +3,13 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
+import threading
 import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 import httpx
@@ -23,6 +27,7 @@ class LlmConfig:
     max_tokens: int = 16384  # long multi-page histories overflowed 4096 (truncated JSON)
     vision: bool = False
     reasoning_effort: Optional[str] = None  # e.g. 'low' for Gemini 3.x / OpenAI reasoning models
+    hedge_after: float = 0.0  # >0: send a duplicate request if no answer after this many seconds; first wins
 
 
 class LlmError(RuntimeError):
@@ -48,12 +53,37 @@ def output_schema(targets: Optional[list[str]] = None) -> dict:
                  "matches": {"type": "array", "items": match, **({} if targets else {"maxItems": 0})}})
     pet = obj({**{k: s for k in ("name", "species", "breed", "sex", "weight", "color", "microchipNumber")},
                "events": {"type": "array", "items": event}})
-    party = obj({"name": s, "address": s, "phone": s})
-    return obj({"pets": {"type": "array", "items": pet}, "owner": party, "clinic": party,
+    party = obj({"name": s, "address": s, "phone": s, "email": s})
+    return obj({"pets": {"type": "array", "items": pet}, "owner": party,
+                "clinic": obj({"name": s, "address": s, "phone": s, "email": s, "website": s}),
                 "veterinarian": obj({"name": s, "licenseNumber": s})})
 
 
 _FORMATS = ("json_schema", "json_object", None)
+_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="llm-hedge")  # not joined: a losing request just finishes
+
+
+def _send(url: str, payload: dict, headers: dict, cfg: LlmConfig) -> httpx.Response:
+    """One HTTP call, hedged: the provider's latency has a long tail (same request: 5 s usually, 60-80 s sometimes),
+    so after `hedge_after` seconds an identical request is raced against it and the first response is used."""
+    if cfg.hedge_after <= 0:
+        return httpx.post(url, json=payload, headers=headers, timeout=cfg.timeout)
+    futs = {_POOL.submit(httpx.post, url, json=payload, headers=headers, timeout=cfg.timeout)}
+    done, _ = wait(futs, timeout=cfg.hedge_after)
+    if not done:
+        futs.add(_POOL.submit(httpx.post, url, json=payload, headers=headers, timeout=cfg.timeout))
+    pending, err = futs, None
+    while pending:
+        done, pending = wait(pending, return_when=FIRST_COMPLETED)
+        for f in done:
+            try:
+                r = f.result()
+            except httpx.HTTPError as e:
+                err = e
+                continue
+            if r.status_code == 200 or not pending:
+                return r
+    raise err
 
 
 def _post(cfg: LlmConfig, messages: list, schema: Optional[dict] = None, fmt: Optional[str] = "json_schema"):
@@ -72,7 +102,7 @@ def _post(cfg: LlmConfig, messages: list, schema: Optional[dict] = None, fmt: Op
     last: Optional[Exception] = None
     for attempt in range(3):
         try:
-            r = httpx.post(url, json=payload, headers=headers, timeout=cfg.timeout)
+            r = _send(url, payload, headers, cfg)
             if r.status_code == 400 and fmt and ("response_format" in r.text or "schema" in r.text):
                 return _post(cfg, messages, schema, _FORMATS[_FORMATS.index(fmt) + 1])
             if r.status_code in (429, 500, 502, 503, 504):
@@ -100,6 +130,44 @@ def parse_json(text: str) -> dict:
 
 
 _EXPANSIONS: dict = {}  # (model, targets) -> {name: [{"label", "species", "diseases"}]}
+_CACHE_LOCK = threading.Lock()
+
+
+def _cache_file() -> Optional[Path]:
+    """Expansions persist across restarts here (VAX_EXPANSION_CACHE; empty disables)."""
+    p = os.environ.get("VAX_EXPANSION_CACHE", ".vax_cache/expansions.json")
+    return Path(p) if p else None
+
+
+def _cache_key(key: tuple) -> str:
+    return key[0] + "||" + ";".join(key[1])
+
+
+def _load_cached(key: tuple):
+    f = _cache_file()
+    if not f or not f.exists():
+        return None
+    try:
+        return json.loads(f.read_text(encoding="utf-8")).get(_cache_key(key))
+    except (OSError, ValueError):
+        return None
+
+
+def _store_cached(key: tuple, exp: dict) -> None:
+    f = _cache_file()
+    if not f:
+        return
+    with _CACHE_LOCK:
+        try:
+            all_ = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+        except (OSError, ValueError):
+            all_ = {}
+        all_[_cache_key(key)] = exp
+        try:
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(json.dumps(all_, ensure_ascii=False, indent=1), encoding="utf-8")
+        except OSError:
+            pass
 
 
 def _expansion_schema(targets: list[str]) -> dict:
@@ -122,6 +190,10 @@ def expand_targets(cfg: LlmConfig, targets: Optional[list[str]]):
     key = (cfg.model, tuple(targets))
     if key in _EXPANSIONS:
         return _EXPANSIONS[key], {}
+    cached = _load_cached(key)
+    if cached is not None:
+        _EXPANSIONS[key] = cached
+        return cached, {}
     msgs = [{"role": "system", "content": EXPAND_PROMPT}, {"role": "user", "content": "\n".join(f"- {t}" for t in targets)}]
     try:
         out, usage = _post(cfg, msgs, _expansion_schema(targets))
@@ -132,6 +204,8 @@ def expand_targets(cfg: LlmConfig, targets: Optional[list[str]]):
     except (LlmError, ValueError, AttributeError):
         return {}, {}
     _EXPANSIONS[key] = exp
+    if exp:
+        _store_cached(key, exp)
     return exp, usage
 
 

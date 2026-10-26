@@ -4,7 +4,7 @@ from pathlib import Path
 
 from vaxextract import dates as D
 from vaxextract.postprocess import build_data
-from vaxextract.schema import RawExtraction
+from vaxextract.schema import RawExtraction, Result
 
 TODAY = date(2026, 10, 2)
 ROOT = Path(__file__).resolve().parents[1]
@@ -184,3 +184,77 @@ def test_coverage_detects_dropped_row():
     _, ok = run([ev("Bordetella - with other vaccines", "02-19-26", m=["Bordetella"]),
                  ev("Bordetella/Lepto - annual vaccine", "02-11-25", m=["Bordetella", "Lepto"])], targets, text)
     assert not any("possible missed events" in r for r in ok)
+
+
+def test_year_month_name_dates_benzo():
+    """Oakridge certificate prints '2026-Sep-21'; Lepto and DAPP must stay separate rows."""
+    assert D.parse_date("2026-Sep-21") == date(2026, 9, 21)
+    assert D.parse_date("21-Sep-2026") == date(2026, 9, 21)
+    targets = ["Bordetella", "DHLPP / FVRCP", "Rabies"]
+    pet, _ = run([
+        ev("Bordetella Vaccine", "2026-Sep-21", "2027-Sep-20", m=["Bordetella"]),
+        ev("Lepto Vaccine", "2026-Sep-21", "2027-Sep-20", m=[{"name": "DHLPP / FVRCP", "partial": True}]),
+        ev("DAPP Vaccine", "2025-Sep-26", "2028-Sep-24", m=[{"name": "DHLPP / FVRCP", "partial": True}]),
+        ev("Rabies Vaccine", "2025-Sep-26", "2028-Sep-25", m=["Rabies"]),
+    ], targets)
+    assert triples(pet) == {("Bordetella", "2026-09-21", "2027-09-20"), ("DHLPP / FVRCP", "2026-09-21", "2027-09-20"),
+                            ("DHLPP / FVRCP", "2025-09-26", "2028-09-24"), ("Rabies", "2025-09-26", "2028-09-25")}
+    v = {x.name: x for x in pet.vaccinations}
+    assert (v["Bordetella"].expirationDate, v["Rabies"].expirationDate) == ("2027-09-20", "2028-09-25")
+    assert not any(x.needsHumanReview for x in pet.vaccinations)
+
+
+def test_undated_rows_not_merged():
+    pet, _ = run([ev("Lepto Vaccine", m=["DHLPP / FVRCP"]), ev("DAPP Vaccine", m=["DHLPP / FVRCP"])],
+                 ["DHLPP / FVRCP"])
+    assert sorted(e.rawName for e in pet.events) == ["DAPP Vaccine", "Lepto Vaccine"]
+
+
+def _slim(raw_events, targets):
+    raw = RawExtraction.model_validate({"pets": [{"name": "X", "events": raw_events}]})
+    data, _ = build_data(raw, "", TODAY, targets)
+    return Result(data=data).to_output()["data"]["pets"][0]["vaccinations"]
+
+
+def test_slim_output_lists_every_printed_row():
+    targets = ["DHLPP / FVRCP", "Rabies"]
+    rows = _slim([ev("DA2P", "9/22/2026", "8/10/2027", m=[{"name": "DHLPP / FVRCP", "partial": True}]),
+                  ev("PARVO", "9/22/2026", "8/10/2027", m=[{"name": "DHLPP / FVRCP", "partial": True}]),
+                  ev("RABIES", "9/22/2026", "8/10/2029", m=["Rabies"])], targets)
+    assert [(r["name"], r["expirationDate"]) for r in rows] == [
+        ("DA2P", "2027-08-10"), ("PARVO", "2027-08-10"), ("RABIES", "2029-08-10")]
+
+
+def test_combination_row_gets_earliest_component_expiry():
+    rows = _slim([ev("DHPP-L", "2026-02-01", m=[("DHLPP / FVRCP", 36), ("Leptospirosis", 12)])],
+                 ["DHLPP / FVRCP", "Leptospirosis"])
+    assert [(r["name"], r["expirationDate"]) for r in rows] == [("DHPP-L", "2027-02-01")]
+
+
+def test_reminder_of_other_product_not_joined():
+    # Greta: DHPPV 3 Year given; the 'Lepto 1 Year' reminder also matches DHLPP but is not DHPPV's due date
+    targets = ["DHLPP / FVRCP", "Leptospirosis"]
+    raw = [ev("DHPPV K9 Distemper Vaccine: 3 Year", "9/18/2026", dur=36, m=[{"name": "DHLPP / FVRCP", "partial": True}]),
+           ev("Lepto Vaccine, 1 Year", None, "12/10/2026",
+              m=[{"name": "DHLPP / FVRCP", "partial": True}, "Leptospirosis"])]
+    pet, _ = run(raw, targets)
+    assert pet.vaccinations[0].expirationDate == "2029-09-18"
+    assert [(r["name"], r.get("expirationDate")) for r in _slim(raw, targets)] == [
+        ("DHPPV K9 Distemper Vaccine: 3 Year", "2029-09-18"), ("Lepto Vaccine, 1 Year", "2026-12-10")]
+
+
+def test_reminder_row_joins_dose_with_same_printed_name():
+    # Harley: invoice line + reminder-table row for the same product
+    rows = _slim([ev("Bordetella Oral Vaccine", "08/26/26", m=["Bordetella"]),
+                  ev("Bordetella Oral Vaccine", None, "2/24/2027", m=["Bordetella"])], ["Bordetella"])
+    assert [(r["name"], r["dateAdministered"], r["expirationDate"]) for r in rows] == [
+        ("Bordetella Oral Vaccine", "2026-08-26", "2027-02-24")]
+
+
+def test_rollup_takes_earliest_expiry_of_same_day_rows():
+    # Cheddar: Lepto 1 yr and DHPP 3 yr given the same day both count for DHLPP
+    pet, _ = run([ev("Canine Leptospirosis 1-Year", "2026-08-27", "2027-08-27", m=[{"name": "DHLPP / FVRCP", "partial": True}]),
+                  ev("Canine Distemper Parvo DHPP", "2026-08-27", "2029-08-26", m=[{"name": "DHLPP / FVRCP", "partial": True}])],
+                 ["DHLPP / FVRCP"])
+    v = pet.vaccinations[0]
+    assert (v.dateAdministered, v.expirationDate, v.needsHumanReview) == ("2026-08-27", "2027-08-27", False)

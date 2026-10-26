@@ -13,7 +13,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from .llm import LlmError
-from .pipeline import Config, extract_bytes
+from .pipeline import Config, extract_bytes, load_dotenv
 from .sheet import update_sheet, verified_by
 
 STATIC = Path(__file__).parent / "static"
@@ -21,16 +21,7 @@ MAX_BYTES = 25 * 1024 * 1024
 log = logging.getLogger(__name__)
 
 
-def _load_dotenv(path: Path) -> None:
-    if not path.exists():
-        return
-    for line in path.read_text(encoding="utf-8").splitlines():
-        k, sep, v = line.strip().partition("=")
-        if sep and not k.startswith("#"):
-            os.environ.setdefault(k.strip(), v.strip().strip('"'))
-
-
-_load_dotenv(Path.cwd() / ".env")
+load_dotenv(Path.cwd() / ".env")
 app = FastAPI(title="vaxextract")
 _lock = threading.Lock()  # the OCR engine is a shared singleton
 

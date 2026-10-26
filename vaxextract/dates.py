@@ -15,7 +15,8 @@ _MONTHS["sept"] = 9
 
 NUM_DATE = re.compile(r"(?<![\d/.\-])(\d{1,4})[-/.](\d{1,2})[-/.](\d{2,4})(?!\d|[/.\-]\d)")
 MON_FIRST = re.compile(r"\b([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\b")
-DAY_FIRST = re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3,9})\.?,?\s+(\d{4})\b")
+DAY_FIRST = re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)?[\s\-/.]+([A-Za-z]{3,9})\.?,?[\s\-/.]+(\d{4})\b")
+YEAR_MON = re.compile(r"\b(\d{4})[\s\-/.]+([A-Za-z]{3,9})\.?[\s\-/.]+(\d{1,2})\b")  # 2026-Sep-21
 
 
 def default_order() -> str:
@@ -65,6 +66,12 @@ def parse_date(s: Optional[str], order: str = "MDY") -> Optional[date]:
             return date(int(m.group(3)), _MONTHS[m.group(2).lower()], int(m.group(1)))
         except ValueError:
             return None
+    m = YEAR_MON.search(s)
+    if m and m.group(2).lower() in _MONTHS:
+        try:
+            return date(int(m.group(1)), _MONTHS[m.group(2).lower()], int(m.group(3)))
+        except ValueError:
+            return None
     return None
 
 
@@ -92,7 +99,7 @@ def infer_order(date_strings: Iterable[Optional[str]]) -> str:
 
 def dates_in_text(line: str, order: str) -> list[date]:
     out: list[date] = []
-    for rx in (NUM_DATE, MON_FIRST, DAY_FIRST):
+    for rx in (NUM_DATE, MON_FIRST, DAY_FIRST, YEAR_MON):
         for m in rx.finditer(line):
             d = parse_date(m.group(0), order)
             if d:

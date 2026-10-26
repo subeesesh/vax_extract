@@ -33,7 +33,7 @@ def test_creates_appends_and_replaces(tmp_path):
     assert (rab["PetName"], rab["POName"], rab["status"], rab["is_verified_by_ai"]) == ("Roo", "Gary", "Verified", True)
     assert rab["Expiration_date"].date().isoformat() == "2028-01-01"
     assert json.loads(rab["final_json"]) == {"partialMatch": False, "matchedComponents": [], "name": "Rabies",
-                                             "expirationDate": "2028-01-01", "needsHumanReview": False}
+                                             "dateAdministered": "2024-02-28", "expirationDate": "2028-01-01", "needsHumanReview": False}
     assert (bord["status"], bord["Results - Comment"]) == ("Not found", "not on document")
     assert "expirationDate" not in json.loads(bord["final_json"])
 

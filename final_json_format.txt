@@ -2,18 +2,54 @@
   "data": {
     "pets": [
       {
-        "name": "",
+        "name": "Buddy",
+        "species": "Canine",
+        "breed": "Labrador Retriever",
+        "sex": "Male (Neutered)",
+        "weight": "64.2 lbs",
+        "color": "Black",
+        "microchipNumber": "985112000000000",
         "vaccinations": [
           {
-            "partialMatch": ,
-            "matchedComponents": ,
-            "name": ,
-            "expirationDate": ,
-            "needsHumanReview": ,
+            "partialMatch": false,
+            "matchedComponents": [],
+            "name": "Rabies Vaccination 3 Year",
+            "dateAdministered": "2026-10-20",
+            "expirationDate": "2029-10-19",
+            "needsHumanReview": false
           },
-          
+          {
+            "partialMatch": true,
+            "matchedComponents": ["DHLPP / FVRCP"],
+            "name": "DAPP Annual Vaccine",
+            "dateAdministered": "2026-10-20",
+            "expirationDate": "2027-10-20",
+            "needsHumanReview": false
+          },
+          {
+            "partialMatch": false,
+            "matchedComponents": [],
+            "name": "Rabies Vaccination 1 Year",
+            "dateAdministered": "2022-05-03",
+            "needsHumanReview": false
+          }
         ]
       }
     ],
-  }
+    "owner": {"name": "Jane Doe", "address": "1 Main St\nAnytown, TX 75001", "phone": "555-010-0000"},
+    "clinic": {"name": "Example Animal Hospital", "address": "100 Clinic Rd\nAnytown, TX 75001",
+               "phone": "555-010-1111", "email": "front@example.vet", "website": "www.example.vet"},
+    "veterinarian": {"name": "Dr. A. Smith, DVM", "licenseNumber": "TX 12345"}
+  },
+  "duration": 6.2,
+  "tokenUsage": {"inputTokens": 2100, "outputTokens": 640, "totalTokens": 2740},
+  "usedFallback": false
 }
+
+Notes
+- pets[].name is the pet; one entry per pet on the document (multi-pet invoices give several).
+- vaccinations[]: one entry per printed vaccine row, name exactly as printed; given doses newest first,
+  then reminder-only rows (no dateAdministered) soonest due first.
+- partialMatch / matchedComponents: the requested vaccine names (per request) that the row covers only partly.
+- A combination row whose components expire at different dates gets the earliest expiry.
+- Fields that were not found are omitted (e.g. no expirationDate, no veterinarian).

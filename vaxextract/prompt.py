@@ -5,8 +5,8 @@ Return ONE JSON object and nothing else:
  "pets": [{"name": str|null, "species": str|null, "breed": str|null, "sex": str|null, "weight": str|null, "color": str|null, "microchipNumber": str|null,
    "events": [{"raw_name": str, "kind": "vaccine"|"diagnostic"|"other", "given_date": str|null, "due_date": str|null, "duration_months": int|null,
      "matches": [{"name": str, "partial": bool, "duration_months": int|null}]}]}],
- "owner": {"name": str|null, "address": str|null, "phone": str|null},
- "clinic": {"name": str|null, "address": str|null, "phone": str|null},
+ "owner": {"name": str|null, "address": str|null, "phone": str|null, "email": str|null},
+ "clinic": {"name": str|null, "address": str|null, "phone": str|null, "email": str|null, "website": str|null},
  "veterinarian": {"name": str|null, "licenseNumber": str|null}
 }
 
