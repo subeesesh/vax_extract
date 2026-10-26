@@ -106,6 +106,10 @@ see the per-name result, full history and raw JSON next to the document preview.
   leaving no expiry, or lists an exam package as a vaccine.
 - **Latency is above target:** ~6 s was the goal; these runs took 7-32 s per document (mostly 10-25 s), mainly the provider's
   long-tail response times. Needs a proper benchmark (on AC power) and possibly a different hedge setting or model.
+  Diagnosis (2026-10-26, free-tier key): OCR ~2 s; the LLM generates in ~2 s but waits 5-70 s for the first token
+  (provider queueing; reasoning_effort makes no difference). Re-measure on the paid key, on AC power, with:
+  `python tools/probe.py <files>` (time per LLM call + OCR/LLM split) and
+  `python tools/latency_split.py <file> --models a,b` (waiting vs generating, per model).
 - **Not run here:** `PaddleEngine` / `TesseractEngine` (need the OCR packages).
 - Next steps: (1) run Document AI over a sample, human-verify -> gold labels in `gold/` (one JSON per doc with its `targets`, same
   shape as `gold/rubi.json`); (2) tune the prompt against the eval; (3) shadow-run vs Document AI and pick
