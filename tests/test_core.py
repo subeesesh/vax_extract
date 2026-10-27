@@ -46,6 +46,8 @@ def test_dates():
     assert D.parse_date("April 21e, 2027") == date(2027, 4, 21)  # OCR noise after the day
     assert D.parse_date("Expires: Jun7, 2029") == date(2029, 6, 7)  # phone font without spaces
     assert D.parse_date("Expires: Mar 17,2027") == date(2027, 3, 17)
+    assert D.parse_date("Oct-06-2026") == date(2026, 10, 6)  # hyphenated month-first
+    assert D.parse_date("Exp-12-2026 Oct-05-2029") == date(2029, 10, 5)  # a non-month word before it is skipped
 
 
 def test_future_given_date_dropped_and_shown_to_reviewer():
