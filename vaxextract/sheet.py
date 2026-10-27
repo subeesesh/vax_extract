@@ -1,6 +1,7 @@
 """Write extraction results into the verification workbook (VAX_SHEET, e.g. vax_verify_failures.xlsx).
 
-One row per (pet x requested vaccine name) in the sheet's existing columns. Rows already in the sheet for the
+One row per (pet x requested vaccine name) in the sheet's existing columns; with no requested names (extraction
+only), one row per printed vaccination. Rows already in the sheet for the
 same document (Document_URL) are replaced, so re-running a document never duplicates it.
 """
 from __future__ import annotations
@@ -10,7 +11,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-from .schema import OutputVaccination, Result, Vaccination
+from .schema import Result
 
 log = logging.getLogger(__name__)
 
@@ -27,23 +28,17 @@ def verified_by(model: str, ocr_engine: str) -> str:
     return f"vaxextract ({model} + {OCR_NAMES.get(ocr_engine, ocr_engine)})"
 
 
-def _final_json(v: Vaccination) -> dict:
-    """Per requested name, for the sheet: the latest record it was matched to."""
-    return OutputVaccination(
-        partialMatch=v.partialMatch,
-        matchedComponents=[c.extractedName for c in v.matchedComponents] if v.partialMatch else [],
-        name=v.name, dateAdministered=v.dateAdministered, expirationDate=v.expirationDate,
-        needsHumanReview=v.needsHumanReview).model_dump(exclude_none=True)
-
-
 def rows_for(result: Result, document: str, verified_by: str, created: datetime) -> list[dict]:
     d = result.data
     owner = d.owner.name if d.owner else None
-    base = {"POName": owner, "created_on": created, "Document_URL": document, "Verified By": verified_by}
-    if not d.pets or not any(p.vaccinations for p in d.pets):
+    base = {"POName": owner, "created_on": created, "Document_URL": document, "Verified By": verified_by,
+            "final_json": json.dumps(result.to_output(), ensure_ascii=False)}  # the client payload, same on every row
+    if not d.pets or not any(p.vaccinations or p.printedRows for p in d.pets):
         return [{**base, "PetName": d.pets[0].name if d.pets else None, "status": "Not found",
                  "is_verified_by_ai": False,
                  "Results - Comment": "; ".join(["no vaccination rows extracted", *result.meta.reviewReasons])}]
+    if not any(p.vaccinations for p in d.pets):  # nothing requested: no mapping, list the printed rows
+        return _printed_rows_for(result, base)
     rows = []
     for p in d.pets:
         for v in p.vaccinations:
@@ -61,8 +56,19 @@ def rows_for(result: Result, document: str, verified_by: str, created: datetime)
             rows.append({**base, "PetName": p.name, "Immunization_Type_Name": v.name,
                          "Expiration_date": datetime.fromisoformat(v.expirationDate) if v.expirationDate else None,
                          "status": "Verified" if ok else ("Needs review" if matched else "Not found"),
-                         "is_verified_by_ai": ok, "Results - Comment": "; ".join(notes + v.reviewReasons),
-                         "final_json": json.dumps(_final_json(v), ensure_ascii=False)})
+                         "is_verified_by_ai": ok, "Results - Comment": "; ".join(notes + v.reviewReasons)})
+    return rows
+
+
+def _printed_rows_for(result: Result, base: dict) -> list[dict]:
+    rows = []
+    for p in result.to_output()["data"]["pets"]:
+        for v in p["vaccinations"]:
+            ok = not v["needsHumanReview"]
+            rows.append({**base, "PetName": p.get("name"), "Immunization_Type_Name": v["name"],
+                         "Expiration_date": datetime.fromisoformat(v["expirationDate"]) if v.get("expirationDate") else None,
+                         "status": "Extracted" if ok else "Needs review", "is_verified_by_ai": ok,
+                         "Results - Comment": f"given {v.get('dateAdministered') or 'n/a'}"})
     return rows
 
 

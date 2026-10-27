@@ -300,9 +300,8 @@ $("#swap").onclick = () => $("#file").click();
 document.addEventListener("drop", (e) => setFile(e.dataTransfer?.files?.[0]));
 
 function updateGo() {
-  const ok = file && selected.size > 0;
-  $("#go").disabled = !ok;
-  $("#goHint").textContent = !file ? "Add a vet record first." : !selected.size ? "Check at least one vaccine." : `Checks ${selected.size} vaccine${selected.size > 1 ? "s" : ""}.`;
+  $("#go").disabled = !file;
+  $("#goHint").textContent = !file ? "Add a vet record first." : !selected.size ? "No vaccines checked: extracts what's printed." : `Checks ${selected.size} vaccine${selected.size > 1 ? "s" : ""}.`;
 }
 
 // ---------- check ----------
@@ -364,6 +363,8 @@ function render(res) {
     <span>Make sure the file is a vaccination history, certificate or invoice, and that the text is readable.</span></div>`;
 
   for (const p of data.pets) {
+    const mapped = p.vaccinations.length > 0;  // no requested vaccines -> extraction only, show the printed rows
+    const rows = mapped ? p.events : p.printedRows;  // printed rows: a dose already carries its reminder's due date
     const meta2 = [p.species, p.breed, p.sex, p.color].filter(Boolean).map((x) => esc(x === x.toUpperCase() ? x.toLowerCase().replace(/^\w/, (c) => c.toUpperCase()) : x)).join(", ");
     html += `<article class="sheet">
       ${p.vaccinations.length ? stampFor(p.vaccinations) : ""}
@@ -375,11 +376,11 @@ function render(res) {
         <div class="when">${whenCell(v)}</div>
         ${v.reviewReasons.length ? `<div class="note">Check against the record: ${esc(v.reviewReasons.join("; "))}.</div>` : ""}
       </li>`; }).join("")}</ul>
-      ${p.events.length ? `<details><summary>Everything printed on the record <span>${p.events.length} line${p.events.length > 1 ? "s" : ""}</span></summary><div class="scroll"><table>
-        <thead><tr><th>As printed</th><th>Counts toward</th><th>Given</th><th>Due</th><th>From the record</th></tr></thead>
-        <tbody>${p.events.map((e) => `<tr>
+      ${rows.length ? `<details${mapped ? "" : " open"}><summary>Everything printed on the record <span>${rows.length} line${rows.length > 1 ? "s" : ""}</span></summary><div class="scroll"><table>
+        <thead><tr><th>As printed</th>${mapped ? "<th>Counts toward</th>" : ""}<th>Given</th><th>Due</th><th>From the record</th></tr></thead>
+        <tbody>${rows.map((e) => `<tr>
           <td>${esc(e.rawName)}${e.isLatest ? `<span class="latest">latest</span>` : ""}${e.reviewReasons.length ? `<span class="flag">${esc(e.reviewReasons.join("; "))}</span>` : ""}</td>
-          <td>${e.target ? esc(e.target) + (e.partial ? " (part)" : "") : `<span class="quote">not required</span>`}</td>
+          ${mapped ? `<td>${e.target ? esc(e.target) + (e.partial ? " (part)" : "") : `<span class="quote">not required</span>`}</td>` : ""}
           <td class="d">${fmt(e.dateAdministered) ?? "–"}</td>
           <td class="d">${fmt(e.dueDate) ?? "–"}${e.dueDateSource === "derived" ? "*" : ""}</td>
           <td class="quote">${esc(e.evidence)}</td></tr>`).join("")}</tbody></table></div></details>` : ""}
@@ -398,8 +399,8 @@ function render(res) {
     <div><dt>Read in</dt><dd>${res.duration.toFixed(1)} s</dd></div>
     <div><dt>Pages</dt><dd>${meta.pages}</dd></div>
   </dl>
-  <details style="margin-top:16px"><summary>Raw data <span>JSON for developers</span></summary>
-    <pre>${esc(JSON.stringify(res, null, 2))}</pre>
+  <details open style="margin-top:16px"><summary>Final JSON <span>the output, as returned by the API and stored in the sheet</span></summary>
+    <pre>${esc(JSON.stringify(res.output, null, 2))}</pre>
     <div class="json-actions"><button class="btn2" id="copyJson" type="button">Copy JSON</button><button class="btn2" id="dlJson" type="button">Download JSON</button></div>
   </details>`;
 
@@ -407,12 +408,12 @@ function render(res) {
   out.innerHTML = html;
   requestAnimationFrame(() => out.querySelectorAll(".sheet").forEach((s) => s.classList.add("landed")));
   $("#copyJson").onclick = async (e) => {
-    try { await navigator.clipboard.writeText(JSON.stringify(lastResult, null, 2)); e.target.textContent = "Copied"; }
+    try { await navigator.clipboard.writeText(JSON.stringify(lastResult.output, null, 2)); e.target.textContent = "Copied"; }
     catch { e.target.textContent = "Copy blocked by browser"; }
   };
   $("#dlJson").onclick = () => {
     const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([JSON.stringify(lastResult, null, 2)], { type: "application/json" }));
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(lastResult.output, null, 2)], { type: "application/json" }));
     a.download = (file?.name || "record").replace(/\.[^.]+$/, "") + ".json"; a.click();
   };
 }

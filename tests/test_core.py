@@ -258,3 +258,24 @@ def test_rollup_takes_earliest_expiry_of_same_day_rows():
                  ["DHLPP / FVRCP"])
     v = pet.vaccinations[0]
     assert (v.dateAdministered, v.expirationDate, v.needsHumanReview) == ("2026-08-27", "2027-08-27", False)
+
+
+def test_name_without_letters_is_flagged():
+    from vaxextract.postprocess import build_data
+    from vaxextract.schema import RawExtraction
+    raw = RawExtraction.model_validate({"pets": [{"name": "Onyx", "events": [
+        {"raw_name": "9/8/2025", "kind": "vaccine", "given_date": "9/8/2025", "due_date": "3/8/2026", "matches": []}]}]})
+    data, _ = build_data(raw, "", date(2026, 10, 27))
+    [e] = data.pets[0].printedRows
+    assert e.needsHumanReview and "looks like a date" in e.reviewReasons[0]
+
+
+def test_reminder_due_date_joins_performed_test():
+    from vaxextract.postprocess import build_data
+    from vaxextract.schema import RawExtraction
+    raw = RawExtraction.model_validate({"pets": [{"name": "Bailey", "events": [
+        {"raw_name": "Heartworm / Antigen Test", "kind": "diagnostic", "given_date": "9/30/2026", "due_date": None, "matches": []},
+        {"raw_name": "Heartworm / Antigen Test", "kind": "diagnostic", "given_date": None, "due_date": "09/30/2027", "matches": []}]}]})
+    data, _ = build_data(raw, "", date(2026, 10, 27))
+    [t] = data.pets[0].diagnosticTests
+    assert (t.dateAdministered, t.dueDate) == ("2026-09-30", "2027-09-30")

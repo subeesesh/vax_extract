@@ -67,6 +67,8 @@ def _build_pet(rp: RawPet, order: str, today: date, targets: list[str], lines: l
         g, r1 = _pdate(e.given_date, order)
         d, r2 = _pdate(e.due_date, order)
         reasons = r1 + r2
+        if not any(c.isalpha() for c in name):
+            reasons.append("name is not a vaccine name (looks like a date or number)")
         evidence = _clean(e.evidence) or _find_line(name, lines)
         if g and g > today + timedelta(days=1):
             reasons.append("given date is in the future")
@@ -109,7 +111,24 @@ def _build_pet(rp: RawPet, order: str, today: date, targets: list[str], lines: l
                 seen.add((t, g))
             if d:
                 seen.add((t, d))
-    return _finalize(rp, evs, list(diags.values()), targets)
+    return _finalize(rp, evs, _join_due_tests(list(diags.values())), targets)
+
+
+def _join_due_tests(tests: list[DiagnosticTest]) -> list[DiagnosticTest]:
+    """A reminder-only test row gives its due date to the latest performed test of the same name that has none."""
+    out: list[DiagnosticTest] = []
+    for t in tests:
+        if t.dateAdministered is None and t.dueDate:
+            done = [x for x in out if x.rawName.lower() == t.rawName.lower() and x.dateAdministered]
+            last = max(done, key=lambda x: x.dateAdministered, default=None)
+            if last and last.dueDate is None and t.dueDate > last.dateAdministered:
+                last.dueDate = t.dueDate
+                last.evidence = " || ".join(dict.fromkeys(x for x in (last.evidence, t.evidence) if x))[:400] or None
+                continue
+            if last and last.dueDate == t.dueDate:
+                continue
+        out.append(t)
+    return out
 
 
 def _merge_dups(evs: list[_Ev]) -> list[_Ev]:
@@ -158,7 +177,7 @@ def _join_due(evs: list[_Ev], key=lambda e: e.target) -> list[_Ev]:
             fits = implied is None or abs((d.due - implied).days) <= 31
             if latest and latest.due is None and d.due > latest.given and fits:
                 latest.due, latest.due_src = d.due, "document"
-                latest.evidence = " || ".join(x for x in (latest.evidence, d.evidence) if x)[:400] or None
+                latest.evidence = " || ".join(dict.fromkeys(x for x in (latest.evidence, d.evidence) if x))[:400] or None
             elif latest and latest.due == d.due:
                 continue
             else:

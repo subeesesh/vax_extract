@@ -30,7 +30,7 @@ class Config:
     primary: LlmConfig
     fallback: Optional[LlmConfig] = None
     ocr_engine: str = "rapid"
-    max_pages: int = 10
+    max_pages: int = 10  # pages that need OCR; text-layer PDF pages are read up to ingest's max_text_pages
     min_text_layer_words: int = 15
 
     @classmethod

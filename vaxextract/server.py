@@ -40,10 +40,9 @@ def targets():
 
 @app.post("/api/extract")
 def extract(file: UploadFile = File(...), targets: str = Form(""), full: bool = Form(False)):
-    """Returns the slim payload; `full=true` returns the whole Result (history, meta) for the UI."""
-    names = [t.strip() for t in targets.split(";") if t.strip()]
-    if not names:
-        raise HTTPException(400, "select at least one vaccine")
+    """Returns the slim payload; `full=true` returns the whole Result (history, meta) for the UI, plus the slim
+    payload under `output`."""
+    names = [t.strip() for t in targets.split(";") if t.strip()]  # none -> extraction only, no mapping
     data = file.file.read(MAX_BYTES + 1)
     if len(data) > MAX_BYTES:
         raise HTTPException(413, "file larger than 25 MB")
@@ -61,7 +60,7 @@ def extract(file: UploadFile = File(...), targets: str = Form(""), full: bool = 
         raise HTTPException(502, f"LLM error: {e}")
     except Exception as e:  # unreadable / unsupported file
         raise HTTPException(422, f"could not process {file.filename}: {e}")
-    return res.model_dump() if full else res.to_output()
+    return {**res.model_dump(), "output": res.to_output()} if full else res.to_output()
 
 
 def main() -> None:

@@ -3,7 +3,7 @@ from datetime import date
 import fitz
 import numpy as np
 
-from vaxextract import llm as llm_mod
+from vaxextract import ingest, llm as llm_mod
 from vaxextract.layout import Token, serialize_page
 from vaxextract.pipeline import Config, extract_bytes
 from vaxextract.llm import LlmConfig
@@ -159,3 +159,45 @@ def test_expansion_cached_on_disk(monkeypatch, tmp_path):
     llm_mod._EXPANSIONS.clear()  # simulate a restart
     b, _ = llm_mod.expand_targets(LlmConfig("u", "k", "m3"), ["Rabies"])
     assert a == b and "Rabies" in a and len(calls) == 1
+
+
+def test_layout_keeps_tightly_spaced_rows_apart():
+    # phone screenshot: rows 16 px apart, boxes 27 px tall -> within the height tolerance, but the boxes stack
+    toks = [Token("10/3/2024", 122, 1204, 192, 1227), Token("Lyme Annual (on own)", 270, 1200, 433, 1231),
+            Token("10/15/2026", 484, 1204, 565, 1227), Token("10/3/2024", 119, 1217, 194, 1246),
+            Token("Lepto Annual (on own) inc PE", 272, 1219, 478, 1246), Token("10/15/2026", 484, 1217, 567, 1246),
+            Token("x", 0, 1000, 10, 1027), Token("y", 0, 1100, 10, 1127)]  # sets the median height
+    assert serialize_page(toks).splitlines()[-2:] == [
+        "10/3/2024 | Lyme Annual (on own) | 10/15/2026", "10/3/2024 | Lepto Annual (on own) inc PE 10/15/2026"]
+
+
+def _words(n):
+    return " ".join(f"w{i}" for i in range(n))
+
+
+def test_text_layer_badge_split_from_name():
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((60, 72), _words(20), fontsize=9)
+    page.insert_text((60, 100), "DA2PP vaccine", fontsize=9, color=(0.2, 0.2, 0.2))
+    page.insert_text((128, 100), "Historical", fontsize=10, color=(0.3, 0.3, 0.9))
+    page.insert_text((300, 100), "Aug 30, 2024", fontsize=9, color=(0.2, 0.2, 0.2))
+    d = ingest.load(doc.tobytes(), lambda: None)
+    assert "DA2PP vaccine | Historical | Aug 30, 2024" in serialize_page(d.pages[0].tokens)
+
+
+def test_text_layer_wrapped_cell_rejoined():
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((60, 72), _words(20), fontsize=9)
+    page.insert_textbox(fitz.Rect(60, 90, 260, 130), "DIST/PARVO/C (3 YR) / LEPTO (1\nYR)", fontsize=10)
+    page.insert_text((300, 100), "6/17/2025", fontsize=10)
+    d = ingest.load(doc.tobytes(), lambda: None)
+    assert "DIST/PARVO/C (3 YR) / LEPTO (1 YR) | 6/17/2025" in serialize_page(d.pages[0].tokens)
+
+
+def test_long_text_pdf_read_past_ocr_page_limit():
+    doc = fitz.open()
+    for i in range(12):
+        doc.new_page().insert_text((60, 72), f"page{i} " + _words(20), fontsize=9)
+    assert len(ingest.load(doc.tobytes(), lambda: None, max_pages=10).pages) == 12

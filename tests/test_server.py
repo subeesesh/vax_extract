@@ -30,9 +30,19 @@ def test_extract_passes_selected_names(monkeypatch):
     assert [v["name"] for v in r.json()["data"]["pets"][0]["vaccinations"]] == ["RABIES 3YR"]
 
 
-def test_extract_requires_a_vaccine():
+def test_extract_without_vaccines_is_extraction_only(monkeypatch):
+    seen = {}
+
+    def fake(data, cfg, targets=None):
+        seen["targets"] = targets
+        return Result(data=Data(pets=[Pet(name="Luna", printedRows=[VaccinationEvent(rawName="RABIES 3YR")])]))
+
+    monkeypatch.setattr(server, "extract_bytes", fake)
+    monkeypatch.setattr(server.Config, "from_env", classmethod(lambda cls: None))
+    monkeypatch.delenv("VAX_SHEET", raising=False)
     r = TestClient(server.app).post("/api/extract", files={"file": ("a.pdf", b"%PDF")}, data={"targets": " ; "})
-    assert r.status_code == 400
+    assert r.status_code == 200 and seen["targets"] == []
+    assert r.json()["data"]["pets"][0]["vaccinations"][0]["matchedComponents"] == []
 
 
 def test_extract_slim_and_full(monkeypatch):
@@ -48,7 +58,7 @@ def test_extract_slim_and_full(monkeypatch):
     monkeypatch.setattr(server, "extract_bytes", fake)
     monkeypatch.setattr(server.Config, "from_env", classmethod(lambda cls: None))
     c = TestClient(server.app)
-    r = c.post("/api/extract", files={"file": ("a.pdf", b"%PDF")}, data={"targets": "DHLPP / FVRCP;Rabies;Lepto"})
+    r = slim = c.post("/api/extract", files={"file": ("a.pdf", b"%PDF")}, data={"targets": "DHLPP / FVRCP;Rabies;Lepto"})
     assert r.json() == {"data": {"pets": [{"name": "Luna", "species": "dog", "vaccinations": [
         {"partialMatch": True, "matchedComponents": ["DHLPP / FVRCP", "Lepto"], "name": "DHPP-L",
          "dateAdministered": "2026-02-28", "expirationDate": "2027-02-28", "needsHumanReview": False},
@@ -60,3 +70,4 @@ def test_extract_slim_and_full(monkeypatch):
         "duration": 4.2, "tokenUsage": {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0}, "usedFallback": False}
     r = c.post("/api/extract", files={"file": ("a.pdf", b"%PDF")}, data={"targets": "Rabies", "full": "true"})
     assert {"meta", "tokenUsage"} <= r.json().keys() and r.json()["data"]["pets"][0]["species"] == "dog"
+    assert r.json()["output"] == slim.json()  # the final JSON rides along for the UI

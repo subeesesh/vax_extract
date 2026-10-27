@@ -63,8 +63,8 @@ Document-level: `meta.needsHumanReview`, `meta.reviewReasons`, `meta.tier`, `met
 ## Verification sheet
 With `VAX_SHEET` set (or `cli extract --sheet <file>`), every extraction (web UI, API, CLI) writes one row per
 pet x requested vaccine into the workbook's columns (`PetName`, `POName`, `Immunization_Type_Name`, `Expiration_date`,
-`status` Verified / Needs review / Not found, `Results - Comment`, `is_verified_by_ai`, `final_json` = that requested
-name's latest record, ...). Re-running a document replaces its rows (keyed by `Document_URL`: the absolute path from the
+`status` Verified / Needs review / Not found, `Results - Comment`, `is_verified_by_ai`, `final_json` = the document's full
+client payload as in `final_json_format.txt`, ...). Re-running a document replaces its rows (keyed by `Document_URL`: the absolute path from the
 CLI, the upload's file name from the web UI). Excel locks an open workbook, so close it first; a failed write is logged
 and never fails the extraction.
 
