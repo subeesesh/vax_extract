@@ -97,13 +97,21 @@ the vaccine names to request (suggestions come from `VAX_TARGETS`, ';'-separated
 see the per-name result, full history and raw JSON next to the document preview. API: `POST /api/extract` (multipart `file`, `targets="Rabies;Parvo"`) -> the same JSON as the CLI.
 
 ## Status / handoff
-- Tested (pytest, 46 tests): dates, layout, post-processing on realistic LLM outputs (incl. `matches`) for the Rubi,
+- Tested (pytest, 47 tests): dates, layout, post-processing on realistic LLM outputs (incl. `matches`) for the Rubi,
   Sam, Silvie, Jimmy, Odin and Luna layouts, client payload shape, combination expiry, reminder joining,
   text-layer PDF -> pipeline -> fallback routing (fake LLM), hedged requests, deskew/colour-cast preprocessing.
 - Live run (Gemini Flash-Lite + RapidOCR, 16 real documents: photos, screenshots, PDFs, multi-pet invoices):
   output spot-checked against the images; vaccine rows and dates correct on all but one photo (a faded reminder
   list where dates and names don't line up). The model sometimes drops a printed interval ("3 Year") from a name,
   leaving no expiry, or lists an exam package as a vaccine.
+- **Accuracy (AI-checked, not yet human-verified):** 50-document sample from `tools/gold.py draft` (seed 0, targets
+  Bordetella; Canine Influenza; DHLPP / FVRCP; Parvo; Rabies), each document checked by an AI pass against its image;
+  47 scored (2 unreadable photos left for a human, 1 duplicate file). Event F1 **91.8 %** strict (target + date given +
+  due date; P 92.2 %, R 91.4 %), **94.5 %** on target + date given; pet names 93.6 %; 37/47 documents exactly right.
+  Errors by layer: OCR/layout - handwriting (3 shelter cards), small light text dropped on tall phone screenshots
+  (detector limit 960 px on the long side), one digit misread; LLM/mapping - Lepto rows not mapped to DHLPP,
+  reminder lines counted as a second dose, printed reminders not used as due dates, a "DECLINED" vaccine taken as
+  given. Treat as an estimate until the sample is spot-checked by a person (`gold_draft/review.xlsx`).
 - **Latency is above target:** ~6 s was the goal; these runs took 7-32 s per document (mostly 10-25 s), mainly the provider's
   long-tail response times. Needs a proper benchmark (on AC power) and possibly a different hedge setting or model.
   Diagnosis (2026-10-26, free-tier key): OCR ~2 s; the LLM generates in ~2 s but waits 5-70 s for the first token
