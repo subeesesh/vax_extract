@@ -19,3 +19,6 @@ results/
 .vax_cache/
 
 backups/
+
+# gold-label drafts (client data + predictions)
+gold_draft/

@@ -304,3 +304,14 @@ def test_reminder_due_date_joins_performed_test():
     data, _ = build_data(raw, "", date(2026, 10, 27))
     [t] = data.pets[0].diagnosticTests
     assert (t.dateAdministered, t.dueDate) == ("2026-09-30", "2027-09-30")
+
+
+def test_eval_ignores_rows_matching_no_requested_name(tmp_path):
+    from vaxextract.eval import evaluate
+
+    ev = {"target": "Rabies", "dateAdministered": "2026-01-02", "dueDate": "2029-01-01"}
+    (tmp_path / "g").mkdir(); (tmp_path / "p").mkdir()
+    (tmp_path / "g" / "d.json").write_text(json.dumps({"pets": [{"name": "Rex", "events": [ev]}]}))
+    pred = {"data": {"pets": [{"name": "Rex", "events": [ev, {"target": None, "dateAdministered": "2026-01-02"}]}]}}
+    (tmp_path / "p" / "d.json").write_text(json.dumps(pred))
+    assert evaluate(str(tmp_path / "p"), str(tmp_path / "g"))["event_strict_prf"] == (1.0, 1.0, 1.0)

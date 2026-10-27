@@ -14,6 +14,7 @@ def _events(obj: dict) -> set:
         (v.get("target"), v.get("dateAdministered"), v.get("dueDate"))
         for p in _pets(obj)
         for v in p.get("events", [])
+        if v.get("target")  # rows that match no requested name are not scored
     }
 
 
