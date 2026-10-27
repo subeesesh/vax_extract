@@ -71,3 +71,19 @@ def test_extract_slim_and_full(monkeypatch):
     r = c.post("/api/extract", files={"file": ("a.pdf", b"%PDF")}, data={"targets": "Rabies", "full": "true"})
     assert {"meta", "tokenUsage"} <= r.json().keys() and r.json()["data"]["pets"][0]["species"] == "dog"
     assert r.json()["output"] == slim.json()  # the final JSON rides along for the UI
+
+
+def test_layout_only_needs_no_llm(monkeypatch):
+    from vaxextract.ingest import Document, Page
+
+    def fake(data, ocr_engine="rapid"):
+        assert data == b"%PDF"
+        return Document(pages=[Page(tokens=[], source="text_layer")], kind="pdf"), "=== PAGE 1 ===\nRABIES | 8/10/2029"
+
+    monkeypatch.setattr(server, "read_layout", fake)
+    monkeypatch.setattr(server, "extract_bytes", lambda *a, **k: pytest.fail("layout must not call the LLM pipeline"))
+    r = TestClient(server.app).post("/api/layout", files={"file": ("a.pdf", b"%PDF")})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["text"].endswith("RABIES | 8/10/2029")
+    assert (body["kind"], body["pages"], body["sources"]) == ("pdf", 1, ["text_layer"])

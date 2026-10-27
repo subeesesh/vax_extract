@@ -7,13 +7,14 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from .llm import LlmError
-from .pipeline import Config, extract_bytes, load_dotenv
+from .pipeline import Config, extract_bytes, load_dotenv, read_layout
 from .sheet import update_sheet, verified_by
 
 STATIC = Path(__file__).parent / "static"
@@ -61,6 +62,22 @@ def extract(file: UploadFile = File(...), targets: str = Form(""), full: bool = 
     except Exception as e:  # unreadable / unsupported file
         raise HTTPException(422, f"could not process {file.filename}: {e}")
     return {**res.model_dump(), "output": res.to_output()} if full else res.to_output()
+
+
+@app.post("/api/layout")
+def layout(file: UploadFile = File(...)):
+    """OCR + layout only, no LLM call: the serialized text the LLM would receive."""
+    data = file.file.read(MAX_BYTES + 1)
+    if len(data) > MAX_BYTES:
+        raise HTTPException(413, "file larger than 25 MB")
+    t0 = time.time()
+    try:
+        with _lock:
+            doc, text = read_layout(data, os.environ.get("VAX_OCR", "rapid"))
+    except Exception as e:  # unreadable / unsupported file
+        raise HTTPException(422, f"could not process {file.filename}: {e}")
+    return {"text": text, "kind": doc.kind, "pages": len(doc.pages),
+            "sources": [p.source for p in doc.pages], "duration": round(time.time() - t0, 3)}
 
 
 def main() -> None:

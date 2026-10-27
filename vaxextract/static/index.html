@@ -93,6 +93,10 @@ button, input { font: inherit; color: inherit; }
 .go button { padding: 13px 28px; border: 0; border-radius: 6px; background: var(--stamp); color: var(--on-stamp); font-size: 16px; font-weight: 700; font-stretch: 110%; cursor: pointer; }
 .go button:disabled { background: var(--rule); color: var(--muted); cursor: not-allowed; }
 .go span { color: var(--muted); }
+.mode { display: flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 600; }
+.mode input { width: 18px; height: 18px; margin: 0; accent-color: var(--stamp); cursor: pointer; }
+.req.off { opacity: .45; }
+.layout-text { max-height: 70vh; white-space: pre; }
 
 /* ---------- result sheet ---------- */
 .sheet { position: relative; background: var(--sheet); border: 1px solid var(--rule); border-radius: 2px; padding: 26px 26px 20px; margin-bottom: 22px; }
@@ -203,6 +207,7 @@ pre { margin: 0 0 12px; padding: 14px; max-height: 420px; overflow: auto; backgr
 
     <div class="go">
       <button id="go" type="button" disabled>Check record</button>
+      <label class="mode"><input type="checkbox" id="layoutOnly"> Layout only (no LLM)</label>
       <span id="goHint" aria-live="polite"></span>
     </div>
 
@@ -299,31 +304,67 @@ $("#swap").onclick = () => $("#file").click();
 ["dragleave", "drop"].forEach((t) => document.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
 document.addEventListener("drop", (e) => setFile(e.dataTransfer?.files?.[0]));
 
+const layoutOnly = () => $("#layoutOnly").checked;
+$("#layoutOnly").checked = store.get("vax.layoutOnly", false);
+$("#layoutOnly").onchange = () => { store.set("vax.layoutOnly", layoutOnly()); updateGo(); };
+
 function updateGo() {
   $("#go").disabled = !file;
-  $("#goHint").textContent = !file ? "Add a vet record first." : !selected.size ? "No vaccines checked: extracts what's printed." : `Checks ${selected.size} vaccine${selected.size > 1 ? "s" : ""}.`;
+  $("#go").textContent = layoutOnly() ? "Read layout" : "Check record";
+  $(".req").classList.toggle("off", layoutOnly());
+  $("#goHint").textContent = !file ? "Add a vet record first." : layoutOnly() ? "OCR + layout text only; vaccines are ignored."
+    : !selected.size ? "No vaccines checked: extracts what's printed." : `Checks ${selected.size} vaccine${selected.size > 1 ? "s" : ""}.`;
 }
 
 // ---------- check ----------
 $("#go").onclick = async () => {
   const targets = names.filter((n) => selected.has(n));
+  const only = layoutOnly();
   const fd = new FormData();
-  fd.append("file", file); fd.append("targets", targets.join(";")); fd.append("full", "true");
+  fd.append("file", file);
+  if (!only) { fd.append("targets", targets.join(";")); fd.append("full", "true"); }
   $("#go").disabled = true;
   const t0 = performance.now();
   $("#out").innerHTML = `<div class="waiting"><strong>Reading ${esc(file.name)}</strong>
-    <p>Usually under 15 seconds. <span id="tick">0</span> s so far.</p><div class="track"><i></i></div></div>`;
+    <p>Usually under ${only ? 5 : 15} seconds. <span id="tick">0</span> s so far.</p><div class="track"><i></i></div></div>`;
   const timer = setInterval(() => { const t = $("#tick"); if (t) t.textContent = Math.round((performance.now() - t0) / 1000); }, 500);
+  let status = 0;
   try {
-    const r = await fetch("/api/extract", { method: "POST", body: fd });
+    const r = await fetch(only ? "/api/layout" : "/api/extract", { method: "POST", body: fd });
+    status = r.status;
     const body = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(body.detail || `The server answered ${r.status}.`);
-    lastResult = body; render(body);
+    lastResult = body; only ? renderLayout(body) : render(body);
   } catch (err) {
+    // the photo hint only helps when the file itself couldn't be read (422), not for LLM/quota errors
     $("#out").innerHTML = `<div class="failed"><strong>The record couldn't be read.</strong>
-      <span>${esc(err.message)} A sharper photo or the original PDF usually fixes this.</span></div>`;
+      <span>${esc(err.message)}${status === 422 ? " A sharper photo or the original PDF usually fixes this." : ""}</span></div>`;
   } finally { clearInterval(timer); updateGo(); }
 };
+
+function renderLayout(res) {
+  const src = [...new Set(res.sources)].map((s) => s === "ocr" ? "OCR" : "PDF text layer").join(" + ");
+  $("#out").innerHTML = `<article class="sheet">
+    <h2 class="pet">Layout text</h2>
+    <p class="pet-meta">What the LLM would receive. No LLM call was made.</p>
+    <pre class="layout-text">${esc(res.text)}</pre>
+    <div class="json-actions"><button class="btn2" id="copyText" type="button">Copy text</button><button class="btn2" id="dlText" type="button">Download .txt</button></div>
+    <dl class="facts">
+      <div><dt>Read in</dt><dd>${res.duration.toFixed(1)} s</dd></div>
+      <div><dt>Pages</dt><dd>${res.pages}</dd></div>
+      <div><dt>Source</dt><dd>${esc(src || "–")}</dd></div>
+    </dl>
+  </article>`;
+  $("#copyText").onclick = async (e) => {
+    try { await navigator.clipboard.writeText(lastResult.text); e.target.textContent = "Copied"; }
+    catch { e.target.textContent = "Copy blocked by browser"; }
+  };
+  $("#dlText").onclick = () => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([lastResult.text], { type: "text/plain" }));
+    a.download = (file?.name || "record").replace(/\.[^.]+$/, "") + ".layout.txt"; a.click();
+  };
+}
 
 // ---------- results ----------
 function judge(v) {

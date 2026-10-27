@@ -68,12 +68,18 @@ def _run(tier: str, lcfg: LlmConfig, text: str, images, today, targets, usage: T
     return Result(data=data, meta=meta, tokenUsage=usage.model_copy())
 
 
+def read_layout(data: bytes, ocr_engine: str = "rapid", max_pages: int = 10,
+                min_words: int = 15) -> tuple[ingest.Document, str]:
+    """Ingest + layout only (no LLM): the document and the serialized text the LLM would receive."""
+    doc = ingest.load(data, lambda: ocr.get_engine(ocr_engine), max_pages, min_words)
+    return doc, serialize([p.tokens for p in doc.pages])
+
+
 def extract_bytes(data: bytes, cfg: Config, today: Optional[date] = None,
                   targets: Optional[list[str]] = None) -> Result:
     """`targets`: the requested vaccine names (per request) that extracted rows are mapped to."""
     t0 = time.time()
-    doc = ingest.load(data, lambda: ocr.get_engine(cfg.ocr_engine), cfg.max_pages, cfg.min_text_layer_words)
-    text = serialize([p.tokens for p in doc.pages])
+    doc, text = read_layout(data, cfg.ocr_engine, cfg.max_pages, cfg.min_text_layer_words)
     t_ocr = time.time() - t0
     sources = {p.source for p in doc.pages}
     meta_base = {"pages": len(doc.pages), "source": sources.pop() if len(sources) == 1 else "mixed"}
