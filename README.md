@@ -22,11 +22,30 @@ derived due dates (only from a printed interval, flagged `dueDateSource: "derive
 validation, coverage check (a dated text line containing a requested name with no extracted event on that date ->
 `possible missed events`), `isLatest`, and the per-requested-name roll-up.
 
-Policy defaults (change in `postprocess.py`): all historical events kept; reminder-only items kept with
-`dateAdministered: null`; given date is never back-computed from due; lot/product expiry, DOB, tags are never dates;
-rows that match no requested name are kept in `events` with `target: null` and are not flagged; when several printed
-rows give one requested name different expiries on the same day (combination products, e.g. Lepto 1 yr + DHPP 3 yr),
-the **earliest expiry wins** (client output, roll-up and sheet).
+## Rules
+Applied deterministically in `postprocess.py` / `dates.py` (no vaccine name tables anywhere):
+
+**Expiry per requested name**
+1. **Combination = earliest expiry.** When several printed rows cover one requested name (e.g. `DHLPP / FVRCP` from
+   DA2PP 3 yr + Lepto 1 yr), the part that expires first sets the date (client output, roll-up and sheet).
+2. **Missing part -> review.** If the rows in force cover only part of a requested name and the rest is not on the
+   document, the name gets `partialMatch` and `needsHumanReview`.
+3. **Latest dose wins.** An older dose is superseded by a later dose of the same name that expires no earlier.
+
+**Dates**
+4. **Month-only dates** (`MM/YYYY`, `YYYY/MM`, `Mon YYYY`, `MM/YY` in reminder lists) mean the **1st of that month**.
+5. **MDY vs DMY** is inferred once per document from its unambiguous dates; `VAX_DEFAULT_DATE_ORDER` (default MDY) is
+   used only when none exists.
+6. Dates are copied **as printed**. A due date is derived only from a printed interval (`dueDateSource: "derived"`); the
+   given date is never back-computed from the due date.
+7. Lot / product expiry, date of birth and tag dates are never vaccination dates.
+
+**Rows and reminders**
+8. All historical events are kept; reminder-only rows are kept with `dateAdministered: null`.
+9. A reminder / "due" row joins the latest dose of the same requested name, unless its date doesn't fit that dose's
+   printed interval. Different products are never merged.
+10. Rows matching no requested name stay in `events` with `target: null` and are not flagged.
+11. A dated line that literally contains a requested name but produced no event -> `possible missed events` (review).
 
 ## Output
 API and CLI return the client payload by default (example in `final_json_format.txt`):
@@ -68,6 +87,39 @@ client payload as in `final_json_format.txt`, ...). Re-running a document replac
 CLI, the upload's file name from the web UI). Excel locks an open workbook, so close it first; a failed write is logged
 and never fails the extraction.
 
+## Cost vs Document AI
+| | Document AI (Custom Extractor) | vaxextract (Gemini 3.5 Flash-Lite + RapidOCR) |
+|---|---|---|
+| Billing | per page | per token; OCR runs locally (free) |
+| Price | $30 / 1,000 pages (first 1M pages/month), $20 after; + $0.05/h per deployed custom processor (~$438/yr) | $0.30 / 1M input tokens, $2.50 / 1M output tokens |
+| Per document | ~$0.034 (1.14 pages avg) | ~$0.0033 (1,958 input + 1,078 output tokens avg) |
+| **Per 1,000 documents** | **~$34** | **~$3.3** (up to ~$6.6 if every call were hedged) |
+
+About **10x cheaper**. Our averages come from 208 extractions in `results/` (159 with page counts; no fallback calls).
+Text-layer PDFs skip OCR entirely; layout-only mode (below) makes no LLM call at all. Hedged requests
+(`VAX_LLM_HEDGE_SECONDS`) can bill a slow call twice, and a fallback model (if set) adds its own cost on flagged
+documents. Assumes Document AI runs a Custom Extractor (Form Parser is the same price); list prices as of 2026-10-27:
+[Document AI pricing](https://cloud.google.com/document-ai/pricing),
+[Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing). The Batch tier halves the Gemini price
+($0.15 / $1.25) where latency doesn't matter.
+
+## How to run
+Use the project's virtual environment (`.venv`); the system Python lacks the dependencies (e.g. PyMuPDF).
+```
+python -m venv .venv
+.venv\Scripts\activate                 # Windows;  source .venv/bin/activate on Linux/macOS
+pip install -e ".[rapid,web,dev]"
+```
+Put the LLM settings in `.env` (see Setup below), then:
+
+- **Web UI:** `python -m vaxextract.server` -> http://127.0.0.1:8000. Upload a document, tick the vaccine names to
+  check and press **Check record**. Tick **Layout only (no LLM)** to see just the OCR/layout text (no API key or quota
+  needed).
+- **CLI:** `python -m vaxextract.cli extract <file or folder> --targets "Rabies;Parvo" [--out preds/ --full]`
+- **API:** `POST /api/extract` (multipart `file`, `targets="Rabies;Parvo"`) -> JSON;
+  `POST /api/layout` (multipart `file`) -> `{text, kind, pages, sources, duration}`, no LLM call.
+- **Tests:** `pytest`
+
 ## Setup
 ```
 pip install -e ".[rapid,dev]"         # or ".[paddle,dev]" / ".[tesseract,dev]" (needs the tesseract binary)
@@ -95,9 +147,10 @@ Library: `extract_file("doc.pdf", Config.from_env(), targets=["Rabies", "Bordete
 Web UI (`pip install -e ".[rapid,web]"`): `python -m vaxextract.server` -> http://127.0.0.1:8000. Upload a document, tick
 the vaccine names to request (suggestions come from `VAX_TARGETS`, ';'-separated; any other name can be typed in), and
 see the per-name result, full history and raw JSON next to the document preview. API: `POST /api/extract` (multipart `file`, `targets="Rabies;Parvo"`) -> the same JSON as the CLI.
+The **Layout only (no LLM)** toggle calls `POST /api/layout` instead and shows the serialized layout text.
 
 ## Status / handoff
-- Tested (pytest, 47 tests): dates, layout, post-processing on realistic LLM outputs (incl. `matches`) for the Rubi,
+- Tested (pytest, 51 tests): dates, layout, post-processing on realistic LLM outputs (incl. `matches`) for the Rubi,
   Sam, Silvie, Jimmy, Odin and Luna layouts, client payload shape, combination expiry, reminder joining,
   text-layer PDF -> pipeline -> fallback routing (fake LLM), hedged requests, deskew/colour-cast preprocessing.
 - Live run (Gemini Flash-Lite + RapidOCR, 16 real documents: photos, screenshots, PDFs, multi-pet invoices):
