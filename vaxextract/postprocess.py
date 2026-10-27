@@ -60,7 +60,7 @@ def _build_pet(rp: RawPet, order: str, today: date, targets: list[str], lines: l
     evs: list[_Ev] = []
     diags: dict = {}
     for e in rp.events:
-        name = (e.raw_name or "").strip()
+        name = re.sub(r"\s+", " ", e.raw_name or "").strip()  # a name wrapped over two lines is one name
         kind = (e.kind or "vaccine").strip().lower()
         if not name or kind == "other":
             continue
@@ -71,12 +71,9 @@ def _build_pet(rp: RawPet, order: str, today: date, targets: list[str], lines: l
             reasons.append("name is not a vaccine name (looks like a date or number)")
         evidence = _clean(e.evidence) or _find_line(name, lines)
         if g and g > today + timedelta(days=1):
-            # vet software often prints next-due dates in a 'vaccinations done' list
-            if d is None and (g - today).days <= MAX_INTERVAL_DAYS:
-                d = g
-                reasons.append("given date is in the future; used as due date")
-            else:
-                reasons.append("given date is in the future")
+            # often a next-due date printed in a 'vaccinations done' list, but just as often an OCR misread
+            # ('10-19-26' read as '10-19-28'): never used as a date, only shown to the reviewer
+            reasons.append(f"given date {g.isoformat()} is in the future (a due date or a misread?)")
             g = None
         if kind == "diagnostic":
             key = (name.lower(), g, d)

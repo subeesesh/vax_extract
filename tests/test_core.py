@@ -44,20 +44,25 @@ def test_dates():
     assert D.parse_date("10212026") == date(2026, 10, 21)
     assert D.parse_date("Tag 250458 issued") is None  # only a whole value is read as a compact date
     assert D.parse_date("April 21e, 2027") == date(2027, 4, 21)  # OCR noise after the day
+    assert D.parse_date("Expires: Jun7, 2029") == date(2029, 6, 7)  # phone font without spaces
+    assert D.parse_date("Expires: Mar 17,2027") == date(2027, 3, 17)
 
 
-def test_future_given_date_read_as_due_date_bentley():
-    # 'Vaccinations done' list printed with next-due dates
-    pet, _ = run([ev("Kennel Cough-oral", "02-11-27", m=["Bordetella"]),
-                  ev("4DX-Heartworm + Tick Diseases", "04-13-27", kind="diagnostic"),
-                  ev("Far future", "02-11-40", m=["Rabies"])], ["Bordetella", "Rabies"])
-    kc = [e for e in pet.events if e.target == "Bordetella"][0]
-    assert (kc.dateAdministered, kc.dueDate, kc.dueDateSource) == (None, "2027-02-11", "document")
-    assert kc.needsHumanReview and "used as due date" in kc.reviewReasons[0]
-    assert pet.vaccinations[0].expirationDate == "2027-02-11"
-    assert pet.diagnosticTests[0].dueDate == "2027-04-13"
-    far = [e for e in pet.events if e.target == "Rabies"][0]
-    assert (far.dateAdministered, far.dueDate) == (None, None)
+def test_future_given_date_dropped_and_shown_to_reviewer():
+    # Ralph: '10-19-26' misread as '10-19-28'; Bentley: next-due dates in a 'vaccinations done' list
+    pet, _ = run([ev("Rabios 1year, #00637", "10-19-28", m=["Rabies"]),
+                  ev("4DX-Heartworm + Tick Diseases", "04-13-27", kind="diagnostic")], ["Rabies"])
+    [rab] = pet.events
+    assert (rab.dateAdministered, rab.dueDate) == (None, None)
+    assert rab.needsHumanReview and "2028-10-19 is in the future" in rab.reviewReasons[0]
+    assert pet.vaccinations[0].expirationDate is None
+    t = pet.diagnosticTests[0]
+    assert (t.dateAdministered, t.dueDate, t.needsHumanReview) == (None, None, True)
+
+
+def test_wrapped_name_joined():
+    pet, _ = run([ev("DA2P+ Parvo\nVaccine Annual", None, "Mar 30, 2027")], [])
+    assert pet.events[0].rawName == "DA2P+ Parvo Vaccine Annual"
 
 
 # ---------------- post-processing on realistic LLM outputs ----------------
