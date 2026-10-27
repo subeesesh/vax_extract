@@ -97,7 +97,7 @@ the vaccine names to request (suggestions come from `VAX_TARGETS`, ';'-separated
 see the per-name result, full history and raw JSON next to the document preview. API: `POST /api/extract` (multipart `file`, `targets="Rabies;Parvo"`) -> the same JSON as the CLI.
 
 ## Status / handoff
-- Tested (pytest, 34 tests): dates, layout, post-processing on realistic LLM outputs (incl. `matches`) for the Rubi,
+- Tested (pytest, 46 tests): dates, layout, post-processing on realistic LLM outputs (incl. `matches`) for the Rubi,
   Sam, Silvie, Jimmy, Odin and Luna layouts, client payload shape, combination expiry, reminder joining,
   text-layer PDF -> pipeline -> fallback routing (fake LLM), hedged requests, deskew/colour-cast preprocessing.
 - Live run (Gemini Flash-Lite + RapidOCR, 16 real documents: photos, screenshots, PDFs, multi-pet invoices):

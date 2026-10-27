@@ -10,6 +10,9 @@ __pycache__/
 
 # real client documents and results (owner/pet personal data)
 dataset/
+testingdata/
+newtestdata/
+Unique Dataset/
 results/
 *.xlsx
 ~$*
