@@ -4,7 +4,7 @@ import fitz
 import numpy as np
 
 from vaxextract import ingest, llm as llm_mod
-from vaxextract.layout import Token, serialize_page
+from vaxextract.layout import Token, polygon_to_token, serialize_page
 from vaxextract.pipeline import Config, extract_bytes
 from vaxextract.llm import LlmConfig
 from vaxextract.preprocess import estimate_skew, preprocess
@@ -169,6 +169,25 @@ def test_layout_keeps_tightly_spaced_rows_apart():
             Token("x", 0, 1000, 10, 1027), Token("y", 0, 1100, 10, 1127)]  # sets the median height
     assert serialize_page(toks).splitlines()[-2:] == [
         "10/3/2024 | Lyme Annual (on own) | 10/15/2026", "10/3/2024 | Lepto Annual (on own) inc PE 10/15/2026"]
+
+
+def test_layout_follows_tilted_table_rows():
+    # bent photo: the table tilts ~5.6 deg (straight page elsewhere), so each name sits ~44 px and each due date
+    # ~80 px below its own given date, while rows are only 30 px apart (polygons from RapidOCR)
+    def tok(text, x0, y0, x1, h=27):
+        return polygon_to_token([(x0, y0), (x1, y0 + 0.098 * (x1 - x0)), (x1, y0 + 0.098 * (x1 - x0) + h),
+                                 (x0, y0 + h)], text)
+    toks = []
+    for i, (given, name, due) in enumerate([("06-03-26", "Booster Galaxy VI-DA2PPv", "06-03-27"),
+                                            ("03-27-25", "2 year Canine Rabies", "03-27-27"),
+                                            ("07-10-20", "Reissue Rabies Tag", None)]):
+        y = 1750 + 30 * i
+        toks += [tok(given, 174, y, 293), tok(name, 520, y + 34, 852)]
+        if due:
+            toks.append(tok(due, 992, y + 80, 1118))
+    assert serialize_page(toks).splitlines() == [
+        "06-03-26 | Booster Galaxy VI-DA2PPv | 06-03-27", "03-27-25 | 2 year Canine Rabies | 03-27-27",
+        "07-10-20 | Reissue Rabies Tag"]
 
 
 def _words(n):

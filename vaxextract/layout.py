@@ -13,6 +13,7 @@ class Token:
     y1: float
     conf: float = 1.0
     style: tuple | None = None  # (font size, colour) of a PDF text-layer word
+    slope: float = 0.0  # dy/dx of the OCR box's top edge: text tilt on a bent or angled photo
 
 
 def _style_break(a: Token, b: Token) -> bool:
@@ -24,16 +25,46 @@ def _style_break(a: Token, b: Token) -> bool:
 def polygon_to_token(points, text: str, conf: float = 1.0) -> Token:
     xs = [float(p[0]) for p in points]
     ys = [float(p[1]) for p in points]
-    return Token(text, min(xs), min(ys), max(xs), max(ys), conf)
+    dx, dy = xs[1] - xs[0], ys[1] - ys[0]  # top-left -> top-right corner
+    slope = dy / dx if len(xs) == 4 and dx > 0 and abs(dy / dx) < 0.25 else 0.0
+    return Token(text, min(xs), min(ys), max(xs), max(ys), conf, slope=slope)
+
+
+def _untilted_centers(toks: list[Token]) -> dict[int, float]:
+    """Vertical centre of each box with the local text tilt removed. A photo of a bent page can tilt a table
+    by 5+ degrees while the page as a whole is straight (so deskew leaves it), and then a due date at the right
+    edge sits a full row below its own given date. Each box takes the median slope of the wide boxes around it
+    (short ones like 'MP' report no usable angle) and is moved along it to the page's middle x - but only where
+    those boxes agree: on a curled photo the left column can tilt while the price columns stay flat, and there
+    the flat rows are the better guess."""
+    straight_h = lambda t: max((t.y1 - t.y0) - abs(t.slope) * (t.x1 - t.x0), 1e-6)  # noqa: E731
+    yc = lambda t: (t.y0 + t.y1) / 2  # noqa: E731
+    wide = [t for t in toks if (t.x1 - t.x0) > 4 * straight_h(t)]
+    if not any(abs(t.slope) > 0.01 for t in wide):
+        return {id(t): yc(t) for t in toks}
+    hs = sorted(map(straight_h, toks))
+    reach = 4 * hs[len(hs) // 2]
+    xs = sorted((t.x0 + t.x1) / 2 for t in toks)
+    x_mid = xs[len(xs) // 2]
+    out = {}
+    for t in toks:
+        near = sorted(w.slope for w in wide if abs(yc(w) - yc(t)) <= reach)
+        s = near[len(near) // 2] if near else 0.0
+        if len(near) < 3 or sum(abs(v - s) <= 0.03 for v in near) < 0.8 * len(near):
+            s = 0.0
+        out[id(t)] = yc(t) - s * ((t.x0 + t.x1) / 2 - x_mid)
+    return out
 
 
 def serialize_page(tokens: list[Token], col_gap_chars: float = 1.5) -> str:
     toks = [t for t in tokens if t.text and t.text.strip()]
     if not toks:
         return ""
-    heights = sorted(max(t.y1 - t.y0, 1e-6) for t in toks)
+    # a tilted box is taller than its text line: measure the line, or the row tolerance spans several rows
+    heights = sorted(max((t.y1 - t.y0) - abs(t.slope) * (t.x1 - t.x0), 1e-6) for t in toks)
     med_h = heights[len(heights) // 2]
-    yc = lambda t: (t.y0 + t.y1) / 2  # noqa: E731
+    ys = _untilted_centers(toks)
+    yc = lambda t: ys[id(t)]  # noqa: E731
     toks.sort(key=yc)
     # a box joins the nearest open line within the height tolerance that it does not stack under/over:
     # boxes of one line never overlap horizontally (tight line spacing on phone screenshots puts

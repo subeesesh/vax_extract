@@ -48,6 +48,11 @@ def test_dates():
     assert D.parse_date("Expires: Mar 17,2027") == date(2027, 3, 17)
     assert D.parse_date("Oct-06-2026") == date(2026, 10, 6)  # hyphenated month-first
     assert D.parse_date("Exp-12-2026 Oct-05-2029") == date(2029, 10, 5)  # a non-month word before it is skipped
+    assert D.parse_date("APR 14 26") == date(2026, 4, 14)  # month name with a two-digit year
+    assert D.parse_date("12 MAY 27") == date(2027, 5, 12)
+    assert D.parse_date("Lot 12 34") is None
+    assert D.parse_date("02/2027") == D.parse_date("2027/02") == D.parse_date("02/27") == date(2027, 2, 1)
+    assert D.parse_date("Feb 2027") == date(2027, 2, 1) and D.parse_date("13/2027") is None
 
 
 def test_future_given_date_dropped_and_shown_to_reviewer():
@@ -60,6 +65,24 @@ def test_future_given_date_dropped_and_shown_to_reviewer():
     assert pet.vaccinations[0].expirationDate is None
     t = pet.diagnosticTests[0]
     assert (t.dateAdministered, t.dueDate, t.needsHumanReview) == (None, None, True)
+
+
+def test_list_of_only_future_dates_read_as_due_dates():
+    # Bentley: every row of 'vaccinations done' prints a next-due date and nothing else -> a due list, not misreads
+    pet, _ = run([ev("Kennel Cough-oral", "02-11-27", m=["Bordetella"]),
+                  ev("DA2PPV 3 year", "02-10-29", m=["DHLPP / FVRCP"]),
+                  ev("Rabies, 2 year", "03-20-27", m=["Rabies"]),
+                  ev("4DX-Heartworm + Tick Diseases", "04-13-27", kind="diagnostic"),
+                  ev("Date of Rabies Vaccination", "03-20-25", "03-20-27", m=["Rabies"])],  # certificate header
+                 ["Bordetella", "DHLPP / FVRCP", "Rabies"])
+    assert triples(pet, True) >= {("Bordetella", None, "2027-02-11"), ("DHLPP / FVRCP", None, "2029-02-10"),
+                                  ("Rabies", "2025-03-20", "2027-03-20")}
+    assert not any(v.needsHumanReview for v in pet.events)
+    # one past date in the list -> the future ones may be misreads again
+    pet, _ = run([ev("Kennel Cough-oral", "02-11-27", m=["Bordetella"]), ev("DA2PPV 3 year", "02-10-29", m=["Rabies"]),
+                  ev("Rabies, 2 year", "03-20-27", m=["Rabies"]), ev("Lepto", "02-11-26", m=["Bordetella"])],
+                 ["Bordetella", "Rabies"])
+    assert {v.dueDate for v in pet.events if v.dateAdministered is None} <= {None}
 
 
 def test_wrapped_name_joined():
@@ -257,13 +280,14 @@ def test_combination_row_gets_earliest_component_expiry():
 
 
 def test_reminder_of_other_product_not_joined():
-    # Greta: DHPPV 3 Year given; the 'Lepto 1 Year' reminder also matches DHLPP but is not DHPPV's due date
+    # Greta: DHPPV 3 Year given; the 'Lepto 1 Year' reminder also matches DHLPP but is not DHPPV's due date.
+    # DHLPP as a whole expires with its first-expiring part, the Lepto
     targets = ["DHLPP / FVRCP", "Leptospirosis"]
     raw = [ev("DHPPV K9 Distemper Vaccine: 3 Year", "9/18/2026", dur=36, m=[{"name": "DHLPP / FVRCP", "partial": True}]),
            ev("Lepto Vaccine, 1 Year", None, "12/10/2026",
               m=[{"name": "DHLPP / FVRCP", "partial": True}, "Leptospirosis"])]
     pet, _ = run(raw, targets)
-    assert pet.vaccinations[0].expirationDate == "2029-09-18"
+    assert (pet.vaccinations[0].expirationDate, pet.vaccinations[0].needsHumanReview) == ("2026-12-10", False)
     assert [(r["name"], r.get("expirationDate")) for r in _slim(raw, targets)] == [
         ("DHPPV K9 Distemper Vaccine: 3 Year", "2029-09-18"), ("Lepto Vaccine, 1 Year", "2026-12-10")]
 
@@ -283,6 +307,33 @@ def test_rollup_takes_earliest_expiry_of_same_day_rows():
                  ["DHLPP / FVRCP"])
     v = pet.vaccinations[0]
     assert (v.dateAdministered, v.expirationDate, v.needsHumanReview) == ("2026-08-27", "2027-08-27", False)
+
+
+def test_combination_expires_with_first_part_and_old_doses_are_superseded():
+    t = ["DHLPP / FVRCP"]
+    dhlpp = lambda: [{"name": "DHLPP / FVRCP", "partial": True}]  # noqa: E731
+    # Bentley: due-only list, DA2PPV 3 year + Lepto annual -> the Lepto date
+    pet, _ = run([ev("DA2PPV 3 year", None, "02-10-29", m=dhlpp()), ev("Annual Leptospirosis Vaccine", None, "02-11-27",
+                                                                       m=dhlpp())], t)
+    assert (pet.vaccinations[0].expirationDate, pet.vaccinations[0].needsHumanReview) == ("2027-02-11", False)
+    # Dottie: this 3-year Distemper/Parvo replaced last year's annual one; no Lepto printed -> review
+    pet, _ = run([ev("3-year Distemper/Parvo Vacc.", "10-16-25", "10-15-28", m=dhlpp()),
+                  ev("Annual Distemper/Parvo Vacc.", "09-05-24", "09-05-25", m=dhlpp())], t)
+    v = pet.vaccinations[0]
+    assert v.expirationDate == "2028-10-15" and v.needsHumanReview
+    assert any("combination not complete" in r for r in v.reviewReasons)
+    # Sadie: an old reminder row long expired next to the current one -> the current one (single product -> review)
+    pet, _ = run([ev("Nobivac 4 Vaccination", None, "10-20-27", m=dhlpp()),
+                  ev("Nobivac 4/Third Vaccination", None, "02-12-21", m=dhlpp())], t)
+    assert (pet.vaccinations[0].expirationDate, pet.vaccinations[0].needsHumanReview) == ("2027-10-20", True)
+    # Gracie: not a combination - the dose's own expiry, not a reminder line printed a day earlier
+    pet, _ = run([ev("Rabies Vaccination. 3yr", "10-12-26", "10-12-29", m=["Rabies"]),
+                  ev("Rabies Vaccination, 3yr", None, "10-11-29", m=["Rabies"])], ["Rabies"])
+    assert pet.vaccinations[0].expirationDate == "2029-10-12"
+    # one combination line printed per part, same day: the earliest expiry
+    pet, _ = run([ev("DHPP 3 YR + LEPTO BOOSTER", "3/6/2026", "3/6/2027", m=dhlpp()),
+                  ev("DHPP 3 YR + LEPTO BOOSTER", "3/6/2026", "3/6/2029", m=dhlpp())], t)
+    assert pet.vaccinations[0].expirationDate == "2027-03-06"
 
 
 def test_name_without_letters_is_flagged():

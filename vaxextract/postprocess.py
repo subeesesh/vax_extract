@@ -55,10 +55,23 @@ def _months(v: Optional[int]) -> Optional[int]:
     return v if v and 0 < v <= 12 * 6 else None
 
 
+def _due_list(rp: RawPet, order: str, today: date) -> bool:
+    """Every row that prints one date prints a future one: a 'vaccinations done' list of next-due dates
+    (Cobblestone certificates: '02-11-27 | Kennel Cough-oral'), not misreads - a misread is one stray future date
+    among past ones. Rows with both dates (the certificate's own 'Date of Rabies Vaccination / Next ...') say
+    nothing either way."""
+    rows = [e for e in rp.events if (e.kind or "vaccine").strip().lower() != "other"
+            and not _pdate(e.due_date, order)[0]]
+    dated = [g for g in (_pdate(e.given_date, order)[0] for e in rows) if g]
+    return len(dated) >= 3 and all(today + timedelta(days=1) < g <= today + timedelta(days=MAX_INTERVAL_DAYS)
+                                   for g in dated)
+
+
 def _build_pet(rp: RawPet, order: str, today: date, targets: list[str], lines: list[str], seen: set):
     canon = {t.strip().lower(): t for t in targets}
     evs: list[_Ev] = []
     diags: dict = {}
+    due_list = _due_list(rp, order, today)
     for e in rp.events:
         name = re.sub(r"\s+", " ", e.raw_name or "").strip()  # a name wrapped over two lines is one name
         kind = (e.kind or "vaccine").strip().lower()
@@ -70,7 +83,9 @@ def _build_pet(rp: RawPet, order: str, today: date, targets: list[str], lines: l
         if not any(c.isalpha() for c in name):
             reasons.append("name is not a vaccine name (looks like a date or number)")
         evidence = _clean(e.evidence) or _find_line(name, lines)
-        if g and g > today + timedelta(days=1):
+        if g and g > today + timedelta(days=1) and due_list:
+            d, g = g, None
+        elif g and g > today + timedelta(days=1):
             # often a next-due date printed in a 'vaccinations done' list, but just as often an OCR misread
             # ('10-19-26' read as '10-19-28'): never used as a date, only shown to the reviewer
             reasons.append(f"given date {g.isoformat()} is in the future (a due date or a misread?)")
@@ -113,7 +128,7 @@ def _build_pet(rp: RawPet, order: str, today: date, targets: list[str], lines: l
                 seen.add((t, g))
             if d:
                 seen.add((t, d))
-    return _finalize(rp, evs, _join_due_tests(list(diags.values())), targets)
+    return _finalize(rp, evs, _join_due_tests(list(diags.values())), targets, today)
 
 
 def _join_due_tests(tests: list[DiagnosticTest]) -> list[DiagnosticTest]:
@@ -145,11 +160,10 @@ def _merge_dups(evs: list[_Ev]) -> list[_Ev]:
             continue
         if k.due is None and e.due:
             k.due, k.due_src = e.due, e.due_src
-        elif e.due and k.due and e.due != k.due:
-            if e.raw_name.lower() == k.raw_name.lower():  # same row printed twice with two dates: suspicious
-                k.reasons.append("conflicting due dates for the same event")
-            elif e.due < k.due:  # different products for this name on one day: the earliest expiry wins
-                k.due, k.due_src = e.due, e.due_src
+        elif e.due and k.due and e.due < k.due:
+            # several products for this name on one day, or one combination printed once per part
+            # ('DHPP 3 YR + LEPTO BOOSTER' due 3/6/2027 and 3/6/2029): the earliest expiry wins
+            k.due, k.due_src = e.due, e.due_src
         if e.raw_name != k.raw_name and e.raw_name not in k.also:
             k.also.append(e.raw_name)
         k.partial = k.partial and e.partial
@@ -205,28 +219,49 @@ def _iso(d: Optional[date]) -> Optional[str]:
     return d.isoformat() if d else None
 
 
-def _rollup(target: str, evs: list[_Ev]) -> Vaccination:
-    """Latest record for one requested name: the latest administered events, else the latest reminder."""
-    mine = [e for e in evs if e.target == target]
-    admin = [e for e in mine if e.given]
+def _current(mine: list[_Ev], today: date) -> list[_Ev]:
+    """The rows still in force for one requested name: an expired row is history once another row for the name is
+    still valid (last year's annual shot next to this year's 3-year one; 'Nobivac 4/Third' due 2021 next to
+    'Nobivac 4' due 2027). Valid rows all stay - without knowing the components, a later dose may be another part of
+    the combination (Lepto given after DHPP), not a replacement. Rows printing no expiry stay if they are the latest dose."""
+    valid = any(s.due and s.due >= today for s in mine)
+    last = max((s.given for s in mine if s.given), default=None)
+    return [r for r in mine if (r.due and (r.due >= today or not valid))
+            or (not r.due and (r.given is None or r.given == last))]
+
+
+def _latest(rows: list[_Ev]) -> list[_Ev]:
+    """The most recent record among rows of the same coverage: the latest dose(s), else the latest reminder."""
+    admin = [e for e in rows if e.given]
     if admin:
-        g = max(e.given for e in admin)
-        chosen = [e for e in admin if e.given == g]
-    else:
-        due = [e for e in mine if e.due]
-        chosen = [e for e in due if e.due == max(x.due for x in due)] if due else mine
-    if not chosen:
+        return [e for e in admin if e.given == max(x.given for x in admin)]
+    due = [e for e in rows if e.due]
+    return [e for e in due if e.due == max(x.due for x in due)] if due else rows
+
+
+def _rollup(target: str, evs: list[_Ev], today: date) -> Vaccination:
+    """One requested name: the latest record of the rows that cover it fully, and next to it every part of a
+    combination still in force; the one that expires first wins (a combination is only as current as its
+    first-expiring part)."""
+    mine = [e for e in evs if e.target == target]
+    if not mine:
         return Vaccination(name=target)
+    cur = _current(mine, today)
+    full = _latest([e for e in cur if not e.partial])
+    chosen = full + [e for e in cur if e.partial] if full else cur
+    dated = [e for e in chosen if e.due]
+    head = min(dated, key=lambda e: (e.due, e.due_src != "document")) if dated else _latest(chosen)[0]
+    chosen = [head] + [e for e in chosen if e is not head]
     names = []
     for e in chosen:
         names += [n for n in [e.raw_name, *e.also] if n not in names]
-    # several rows count for this name on that date (e.g. Lepto 1 yr + DHPP 3 yr): the earliest expiry wins
-    dated = [e for e in chosen if e.due]
-    head = min(dated, key=lambda e: (e.due, e.due_src != "document")) if dated else chosen[0]
     reasons = sorted({r for e in chosen for r in e.reasons})
+    # every row in force covers only part of the name and they are all one product: the rest is not on the document
+    if all(e.partial for e in cur) and len({n.lower() for e in cur for n in [e.raw_name, *e.also]}) == 1:
+        reasons.append(f"combination not complete: only '{cur[0].raw_name}' is printed for {target}")
     return Vaccination(
         name=target,
-        partialMatch=all(e.partial for e in chosen),
+        partialMatch=all(e.partial for e in cur),
         matchedComponents=[MatchedComponent(extractedName=n, dateAdministered=_iso(e.given), expiryDate=_iso(e.due),
                                             expiryDateSource=e.due_src if e.due else None, evidence=e.evidence)
                            for e in chosen for n in [e.raw_name, *e.also]],
@@ -245,7 +280,7 @@ def _event(e: _Ev, is_latest: bool = False) -> VaccinationEvent:
                             needsHumanReview=bool(e.reasons), reviewReasons=e.reasons, evidence=e.evidence)
 
 
-def _finalize(rp: RawPet, evs: list[_Ev], diags: list[DiagnosticTest], targets: list[str]) -> Pet:
+def _finalize(rp: RawPet, evs: list[_Ev], diags: list[DiagnosticTest], targets: list[str], today: date) -> Pet:
     # rows as printed: no merging, and a reminder only joins a dose printed under the same name
     printed = _join_due([replace(e, reasons=list(e.reasons)) for e in evs], key=lambda e: e.raw_name.lower())
     _derive_and_validate(printed)
@@ -264,7 +299,7 @@ def _finalize(rp: RawPet, evs: list[_Ev], diags: list[DiagnosticTest], targets: 
     return Pet(
         name=_clean(rp.name), species=_clean(rp.species), breed=_clean(rp.breed), sex=_clean(rp.sex),
         weight=_clean(rp.weight), color=_clean(rp.color), microchipNumber=_clean(rp.microchipNumber),
-        vaccinations=[_rollup(t, evs) for t in targets], events=events, diagnosticTests=diags,
+        vaccinations=[_rollup(t, evs, today) for t in targets], events=events, diagnosticTests=diags,
         printedRows=[_event(e) for e in printed],
     )
 

@@ -15,11 +15,13 @@ _MONTHS["sept"] = 9
 
 NUM_DATE = re.compile(r"(?<![\d/.\-])(\d{1,4})[-/.](\d{1,2})[-/.](\d{2,4})(?!\d|[/.\-]\d)")
 # the day may carry an ordinal or OCR noise ('21st', '21e'); phone fonts drop spaces ('Jun7, 2029', 'Mar 17,2027');
-# some clinics hyphenate ('Oct-06-2026')
-MON_FIRST = re.compile(r"\b([A-Za-z]{3,9})\.?[\s\-/.]*(\d{1,2})[A-Za-z]{0,2}(?:,\s*|[\s\-/.]+)(\d{4})\b")
-DAY_FIRST = re.compile(r"\b(\d{1,2})[A-Za-z]{0,2}[\s\-/.]+([A-Za-z]{3,9})\.?,?[\s\-/.]+(\d{4})\b")
+# some clinics hyphenate ('Oct-06-2026'), some print a two-digit year ('APR 14 26')
+MON_FIRST = re.compile(r"\b([A-Za-z]{3,9})\.?[\s\-/.]*(\d{1,2})[A-Za-z]{0,2}(?:,\s*|[\s\-/.]+)(\d{4}|\d{2})\b")
+DAY_FIRST = re.compile(r"\b(\d{1,2})[A-Za-z]{0,2}[\s\-/.]+([A-Za-z]{3,9})\.?,?[\s\-/.]+(\d{4}|\d{2})\b")
 COMPACT = re.compile(r"(\d{2})(\d{2})(\d{2}|\d{4})")  # whole value only: '102126', '10212026'
 YEAR_MON = re.compile(r"\b(\d{4})[\s\-/.]+([A-Za-z]{3,9})\.?[\s\-/.]+(\d{1,2})\b")  # 2026-Sep-21
+# whole value only, read as the 1st of the month: '02/2027', '2027/02', '02/27' (reminder lists), 'Feb 2027'
+MONTH_ONLY = re.compile(r"(\d{1,2})[-/.](\d{4}|\d{2})|(\d{4})[-/.](\d{1,2})|([A-Za-z]{3,9})\.?,?\s*(\d{4})")
 
 
 def default_order() -> str:
@@ -60,13 +62,13 @@ def parse_date(s: Optional[str], order: str = "MDY") -> Optional[date]:
     m = next((m for m in MON_FIRST.finditer(s) if m.group(1).lower() in _MONTHS), None)  # skip 'Exp-12-2026'-like words
     if m:
         try:
-            return date(int(m.group(3)), _MONTHS[m.group(1).lower()], int(m.group(2)))
+            return date(_year(m.group(3)), _MONTHS[m.group(1).lower()], int(m.group(2)))
         except ValueError:
             return None
     m = DAY_FIRST.search(s)
     if m and m.group(2).lower() in _MONTHS:
         try:
-            return date(int(m.group(3)), _MONTHS[m.group(2).lower()], int(m.group(1)))
+            return date(_year(m.group(3)), _MONTHS[m.group(2).lower()], int(m.group(1)))
         except ValueError:
             return None
     m = YEAR_MON.search(s)
@@ -75,6 +77,13 @@ def parse_date(s: Optional[str], order: str = "MDY") -> Optional[date]:
             return date(int(m.group(1)), _MONTHS[m.group(2).lower()], int(m.group(3)))
         except ValueError:
             return None
+    m = MONTH_ONLY.fullmatch(s)
+    if m:
+        mm, yy, yy4, mm4, name, yyn = m.groups()
+        month = int(mm) if mm else int(mm4) if mm4 else _MONTHS.get(name.lower())
+        year = _year(yy) if yy else int(yy4 or yyn)
+        if month and 1 <= month <= 12 and year:
+            return date(year, month, 1)
     return None
 
 
