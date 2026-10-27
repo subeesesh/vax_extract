@@ -201,3 +201,33 @@ def test_long_text_pdf_read_past_ocr_page_limit():
     for i in range(12):
         doc.new_page().insert_text((60, 72), f"page{i} " + _words(20), fontsize=9)
     assert len(ingest.load(doc.tobytes(), lambda: None, max_pages=10).pages) == 12
+
+
+class _FakeOcr:
+    def run(self, img):
+        return [Token("OCR", 10, 10, 40, 20)]
+
+
+def _text_pdf(text, render_mode=0):
+    doc = fitz.open()
+    page = doc.new_page()
+    for i, ln in enumerate(text.splitlines()):
+        page.insert_text((60, 72 + i * 18), ln, fontsize=11, render_mode=render_mode)
+    return doc.tobytes()
+
+
+_CERT = "\n".join(["Vaccination Certificate for Gracie", "Rabies Vaccination 3yr given 10/12/2026"]
+                  + [f"Canine Bordetella intranasal due 10/12/2027 line {i}" for i in range(6)])
+
+
+def test_good_text_layer_is_used():
+    assert ingest.load(_text_pdf(_CERT), lambda: _FakeOcr()).pages[0].source == "text_layer"
+
+
+def test_invisible_scanner_text_layer_is_ocred():
+    assert ingest.load(_text_pdf(_CERT, render_mode=3), lambda: _FakeOcr()).pages[0].source == "ocr"
+
+
+def test_letter_shifted_text_layer_is_ocred():
+    shifted = "".join(chr(ord(c) - 29) if c.isalpha() else c for c in _CERT)  # 'Rabies' -> '5DELHV'-style
+    assert ingest.load(_text_pdf(shifted), lambda: _FakeOcr()).pages[0].source == "ocr"

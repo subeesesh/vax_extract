@@ -66,6 +66,18 @@ def _text_layer_tokens(page) -> list[Token]:
     return toks
 
 
+def _text_layer_usable(page) -> bool:
+    """False for a text layer that is worse than our own OCR: an invisible layer laid over a scan by the
+    scanner's OCR (dates come out as '10t12t2026'), or a font without a usable character map, whose words
+    decode letter-shifted ('5DELHV' for 'Rabies'). Real text has about 35-45 % vowels among its letters,
+    shifted text about 10 %; short pages of abbreviations (DHPP, DA2PP) are not judged."""
+    trace = page.get_texttrace()
+    if trace and sum(s["type"] == 3 for s in trace) > len(trace) / 2:
+        return False
+    letters = [c for c in page.get_text().lower() if "a" <= c <= "z"]
+    return len(letters) < 150 or sum(c in "aeiou" for c in letters) / len(letters) >= 0.2
+
+
 def load(data: bytes, get_ocr: Callable, max_pages: int = 10, min_words: int = 15,
          max_text_pages: int = 50) -> Document:
     """`max_pages` caps the pages that need OCR; text-layer PDF pages cost no OCR, so long text PDFs
@@ -79,7 +91,7 @@ def load(data: bytes, get_ocr: Callable, max_pages: int = 10, min_words: int = 1
             if i >= max_text_pages:
                 break
             toks = _text_layer_tokens(page)
-            if len(toks) >= min_words:
+            if len(toks) >= min_words and _text_layer_usable(page):
                 pages.append(Page(toks, "text_layer"))
                 continue
             if n_ocr >= max_pages:

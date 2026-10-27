@@ -71,7 +71,12 @@ def _build_pet(rp: RawPet, order: str, today: date, targets: list[str], lines: l
             reasons.append("name is not a vaccine name (looks like a date or number)")
         evidence = _clean(e.evidence) or _find_line(name, lines)
         if g and g > today + timedelta(days=1):
-            reasons.append("given date is in the future")
+            # vet software often prints next-due dates in a 'vaccinations done' list
+            if d is None and (g - today).days <= MAX_INTERVAL_DAYS:
+                d = g
+                reasons.append("given date is in the future; used as due date")
+            else:
+                reasons.append("given date is in the future")
             g = None
         if kind == "diagnostic":
             key = (name.lower(), g, d)

@@ -14,8 +14,10 @@ for _i in range(1, 13):
 _MONTHS["sept"] = 9
 
 NUM_DATE = re.compile(r"(?<![\d/.\-])(\d{1,4})[-/.](\d{1,2})[-/.](\d{2,4})(?!\d|[/.\-]\d)")
-MON_FIRST = re.compile(r"\b([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\b")
-DAY_FIRST = re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)?[\s\-/.]+([A-Za-z]{3,9})\.?,?[\s\-/.]+(\d{4})\b")
+# the day may carry an ordinal or OCR noise ('21st', '21e')
+MON_FIRST = re.compile(r"\b([A-Za-z]{3,9})\.?\s+(\d{1,2})[A-Za-z]{0,2},?\s+(\d{4})\b")
+DAY_FIRST = re.compile(r"\b(\d{1,2})[A-Za-z]{0,2}[\s\-/.]+([A-Za-z]{3,9})\.?,?[\s\-/.]+(\d{4})\b")
+COMPACT = re.compile(r"(\d{2})(\d{2})(\d{2}|\d{4})")  # whole value only: '102126', '10212026'
 YEAR_MON = re.compile(r"\b(\d{4})[\s\-/.]+([A-Za-z]{3,9})\.?[\s\-/.]+(\d{1,2})\b")  # 2026-Sep-21
 
 
@@ -37,7 +39,7 @@ def parse_date(s: Optional[str], order: str = "MDY") -> Optional[date]:
     if not s:
         return None
     s = s.strip()
-    m = NUM_DATE.search(s)
+    m = NUM_DATE.search(s) or COMPACT.fullmatch(s)
     if m:
         a, b, c = m.groups()
         if len(a) == 4:
