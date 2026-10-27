@@ -1,0 +1,290 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>vaxextract Pipeline</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: one tall flow diagram (top = request, bottom = JSON out), bands colour-coded by owner, notes beneath */
+:root {
+  --bg: #f4f7f6; --surface: #ffffff; --fg: #15201c; --muted: #5a6964; --line: #7d8c87;
+  --own: #0e7468; --own-bg: #e2f0ec;
+  --llm: #5048a8; --llm-bg: #ebe9f8;
+  --det: #3d5566; --det-bg: #e6ecf0;
+  --out: #a3560b; --out-bg: #fbeedd;
+  --sans: "IBM Plex Sans", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #111816; --surface: #19221f; --fg: #e3ebe8; --muted: #93a39e; --line: #6f807a;
+  --own: #4fc2b2; --own-bg: #16302b; --llm: #a49cf0; --llm-bg: #232040;
+  --det: #9fb7c7; --det-bg: #1c262d; --out: #f0a356; --out-bg: #33230f; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #111816; --surface: #19221f; --fg: #e3ebe8; --muted: #93a39e; --line: #6f807a;
+  --own: #4fc2b2; --own-bg: #16302b; --llm: #a49cf0; --llm-bg: #232040;
+  --det: #9fb7c7; --det-bg: #1c262d; --out: #f0a356; --out-bg: #33230f; color-scheme: dark }
+
+body { background: var(--bg); color: var(--fg); font-family: var(--sans); line-height: 1.5; }
+.wrap { max-width: 1040px; margin: 0 auto; padding-block: 32px 48px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; gap: 28px; }
+h1 { font-size: 1.75rem; font-weight: 600; margin: 0; text-wrap: balance; }
+header p { margin: 6px 0 0; color: var(--muted); max-width: 68ch; }
+code { font-family: var(--mono); font-size: .9em; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 20px; font-size: .85rem; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 8px; }
+.legend i { width: 14px; height: 14px; border-radius: 3px; border: 1.5px solid; display: inline-block; }
+.scroll { overflow-x: auto; background: var(--surface); border: 1px solid color-mix(in srgb, var(--line) 35%, transparent); border-radius: 10px; }
+svg { display: block; width: 100%; min-width: 760px; height: auto; }
+
+svg text { fill: var(--fg); font-family: var(--sans); font-size: 14px; }
+svg .t { font-weight: 600; }
+svg .s { font-family: var(--mono); font-size: 11.5px; fill: var(--muted); }
+svg .lbl { font-size: 11.5px; letter-spacing: .08em; text-transform: uppercase; font-weight: 600; }
+svg .tag { font-size: 12px; fill: var(--muted); }
+svg .edge { font-family: var(--mono); font-size: 11.5px; fill: var(--muted); }
+svg .box { fill: var(--surface); stroke: var(--line); stroke-width: 1; }
+svg .arrow { stroke: var(--line); stroke-width: 1.5; fill: none; marker-end: url(#ah); }
+svg .dash { stroke-dasharray: 5 4; }
+svg #ah path { fill: var(--line); }
+svg .p-own { fill: var(--own-bg); stroke: var(--own); }
+svg .p-llm { fill: var(--llm-bg); stroke: var(--llm); }
+svg .p-det { fill: var(--det-bg); stroke: var(--det); }
+svg .c-own { fill: var(--own); } svg .c-llm { fill: var(--llm); } svg .c-det { fill: var(--det); } svg .c-out { fill: var(--out); }
+svg .hl { fill: var(--out-bg); stroke: var(--out); stroke-width: 1.5; }
+svg .gate { fill: var(--surface); stroke: var(--fg); stroke-width: 1.2; }
+svg .num { font-family: var(--mono); font-size: 11px; fill: var(--det); font-weight: 500; }
+
+.notes { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 20px 32px; }
+.notes section { min-width: 0; }
+.notes h2 { font-size: .8rem; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0 0 6px; font-weight: 600; }
+.notes ul { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: .92rem; }
+</style>
+
+<div class="wrap">
+<header>
+  <h1>vaxextract pipeline</h1>
+  <p>One vet vaccination document in, one client JSON out. Every entry point calls <code>pipeline.extract_bytes</code>; the requested vaccine names arrive with each request, and nothing in the code knows vaccine names.</p>
+</header>
+
+<div class="legend">
+  <span><i style="background:var(--own-bg);border-color:var(--own)"></i>OCR &amp; layout (your module)</span>
+  <span><i style="background:var(--llm-bg);border-color:var(--llm)"></i>LLM &amp; mapping (others, paid API)</span>
+  <span><i style="background:var(--det-bg);border-color:var(--det)"></i>Deterministic rules</span>
+  <span><i style="background:var(--out-bg);border-color:var(--out)"></i>The product</span>
+</div>
+
+<div class="scroll">
+<svg viewBox="0 0 1000 1500" role="img" aria-label="vaxextract pipeline architecture diagram">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+
+  <!-- entry points -->
+  <rect class="box" x="40" y="20" width="290" height="62" rx="6"/>
+  <text class="t" x="185" y="46" text-anchor="middle">Web UI / API</text>
+  <text class="s" x="185" y="66" text-anchor="middle">server.py · POST /api/extract</text>
+  <rect class="box" x="355" y="20" width="290" height="62" rx="6"/>
+  <text class="t" x="500" y="46" text-anchor="middle">CLI</text>
+  <text class="s" x="500" y="66" text-anchor="middle">cli.py extract [--full] [--sheet]</text>
+  <rect class="box" x="670" y="20" width="290" height="62" rx="6"/>
+  <text class="t" x="815" y="46" text-anchor="middle">Library</text>
+  <text class="s" x="815" y="66" text-anchor="middle">extract_file(path, cfg, targets)</text>
+  <path class="arrow" d="M185,82 V116"/><path class="arrow" d="M500,82 V116"/><path class="arrow" d="M815,82 V116"/>
+
+  <rect class="box" x="40" y="118" width="920" height="50" rx="6" style="stroke:var(--fg)"/>
+  <text class="t" x="500" y="139" text-anchor="middle" style="font-family:var(--mono);font-size:13.5px">pipeline.extract_bytes(bytes, Config, targets)</text>
+  <text class="s" x="500" y="158" text-anchor="middle">Config.from_env() ← env / .env  ·  targets = requested vaccine names, per request (may be empty)</text>
+  <path class="arrow" d="M500,168 V224"/>
+
+  <!-- 1 extraction -->
+  <rect class="p-own" x="40" y="188" width="920" height="438" rx="10" stroke-width="1.5"/>
+  <text class="lbl c-own" x="58" y="211">1 · Extraction: bytes → layout text</text>
+  <text class="tag" x="942" y="211" text-anchor="end">ingest.py · preprocess.py · ocr.py · layout.py</text>
+
+  <rect class="gate" x="395" y="226" width="210" height="40" rx="20"/>
+  <text class="t" x="500" y="251" text-anchor="middle" style="font-size:13px">Starts with %PDF- ?</text>
+  <path class="arrow" d="M395,246 H265 V284"/><text class="edge" x="300" y="240">PDF</text>
+  <path class="arrow" d="M605,246 H735 V284"/><text class="edge" x="660" y="240">image</text>
+
+  <rect class="box" x="60" y="286" width="410" height="56" rx="6"/>
+  <text class="t" x="265" y="309" text-anchor="middle">PyMuPDF, page by page</text>
+  <text class="s" x="265" y="329" text-anchor="middle">≤50 text-layer pages · ≤10 OCR pages</text>
+  <path class="arrow" d="M265,342 V364"/>
+
+  <rect class="gate" x="60" y="366" width="410" height="66" rx="6"/>
+  <text class="t" x="265" y="387" text-anchor="middle">Text layer usable?</text>
+  <text class="s" x="265" y="405" text-anchor="middle">≥15 words · not an invisible scanner layer</text>
+  <text class="s" x="265" y="421" text-anchor="middle">vowel share ≥20% (no letter-shifted fonts)</text>
+  <path class="arrow" d="M157,432 V464"/><text class="edge" x="165" y="452">yes</text>
+  <path class="arrow" d="M372,432 V464"/><text class="edge" x="380" y="452">no</text>
+
+  <rect class="box" x="60" y="466" width="195" height="64" rx="6"/>
+  <text class="t" x="157" y="488" text-anchor="middle">Text-layer tokens</text>
+  <text class="s" x="157" y="506" text-anchor="middle">words + span style</text>
+  <text class="s" x="157" y="521" text-anchor="middle">rejoin "(1 / YR)" wraps</text>
+  <rect class="box" x="275" y="466" width="195" height="64" rx="6"/>
+  <text class="t" x="372" y="488" text-anchor="middle">Render page</text>
+  <text class="s" x="372" y="506" text-anchor="middle">200 dpi → RGB</text>
+  <text class="s" x="372" y="521" text-anchor="middle">source = "ocr"</text>
+  <path class="arrow" d="M470,498 H500 V399 H528"/>
+
+  <rect class="box" x="530" y="286" width="410" height="56" rx="6"/>
+  <text class="t" x="735" y="309" text-anchor="middle">Pillow, frame by frame</text>
+  <text class="s" x="735" y="329" text-anchor="middle">≤10 frames · EXIF transpose → RGB</text>
+  <path class="arrow" d="M735,342 V364"/>
+
+  <rect class="box" x="530" y="366" width="410" height="66" rx="6"/>
+  <text class="t" x="735" y="387" text-anchor="middle">Preprocess</text>
+  <text class="s" x="735" y="405" text-anchor="middle">downscale ≤2400 px → grayscale</text>
+  <text class="s" x="735" y="421" text-anchor="middle">illumination divide → deskew (±10°)</text>
+  <path class="arrow" d="M735,432 V464"/>
+
+  <rect class="box" x="530" y="466" width="410" height="64" rx="6"/>
+  <text class="t" x="735" y="488" text-anchor="middle">OCR engine (VAX_OCR)</text>
+  <text class="s" x="735" y="506" text-anchor="middle">RapidOCR (default) · Paddle · Tesseract</text>
+  <text class="s" x="735" y="521" text-anchor="middle">→ word boxes + text</text>
+
+  <path class="arrow" d="M157,530 V558"/><path class="arrow" d="M735,530 V558"/>
+  <rect class="box" x="60" y="560" width="880" height="50" rx="6"/>
+  <text class="t" x="500" y="581" text-anchor="middle">layout.serialize: tokens → layout text</text>
+  <text class="s" x="500" y="599" text-anchor="middle">cluster boxes into lines (stacked boxes kept apart) · cells joined with " | " · pages concatenated</text>
+
+  <path class="arrow" d="M735,610 V706"/>
+  <text class="edge" x="745" y="648">layout text</text>
+  <text class="edge" x="60" y="648">meta.ocrSeconds stops here (~2 s)</text>
+
+  <!-- 2 llm -->
+  <rect class="p-llm" x="40" y="666" width="920" height="214" rx="10" stroke-width="1.5"/>
+  <text class="lbl c-llm" x="58" y="689">2 · LLM extraction &amp; mapping</text>
+  <text class="tag" x="942" y="689" text-anchor="end">llm.py · prompt.py</text>
+
+  <rect class="box" x="60" y="708" width="410" height="80" rx="6"/>
+  <text class="t" x="265" y="730" text-anchor="middle">expand_targets()</text>
+  <text class="s" x="265" y="748" text-anchor="middle">requested names → diseases each covers</text>
+  <text class="s" x="265" y="764" text-anchor="middle">one call per (model, target list)</text>
+  <text class="s" x="265" y="780" text-anchor="middle">cached: .vax_cache/expansions.json</text>
+  <path class="arrow" d="M470,748 H528"/><text class="edge" x="474" y="740">definitions</text>
+
+  <rect class="box" x="530" y="708" width="410" height="80" rx="6"/>
+  <text class="t" x="735" y="730" text-anchor="middle">llm.extract()</text>
+  <text class="s" x="735" y="748" text-anchor="middle">prompt: layout text + targets + definitions</text>
+  <text class="s" x="735" y="764" text-anchor="middle">JSON-schema call · Gemini Flash-Lite</text>
+  <text class="s" x="735" y="780" text-anchor="middle">hedged resend after 10 s · 1 repair retry</text>
+  <path class="arrow" d="M735,788 V812"/>
+
+  <rect class="box" x="60" y="814" width="880" height="50" rx="6"/>
+  <text class="t" x="500" y="835" text-anchor="middle">RawExtraction (schema.py)</text>
+  <text class="s" x="500" y="853" text-anchor="middle">pets[].events{rawName, kind, dates as printed, matches[name, partial, interval]} · owner · clinic · vet</text>
+  <path class="arrow" d="M500,864 V918"/>
+
+  <!-- 3 postprocess -->
+  <rect class="p-det" x="40" y="900" width="920" height="200" rx="10" stroke-width="1.5"/>
+  <text class="lbl c-det" x="58" y="923">3 · Deterministic post-process</text>
+  <text class="tag" x="942" y="923" text-anchor="end">postprocess.py · dates.py · knows no vaccine names</text>
+
+  <g id="steps">
+    <rect class="box" x="60"  y="940" width="160" height="62" rx="6"/>
+    <text class="num" x="72" y="958">01</text><text class="t" x="140" y="975" text-anchor="middle" style="font-size:13px">Infer MDY / DMY</text><text class="s" x="140" y="992" text-anchor="middle">whole document</text>
+    <rect class="box" x="240" y="940" width="160" height="62" rx="6"/>
+    <text class="num" x="252" y="958">02</text><text class="t" x="320" y="975" text-anchor="middle" style="font-size:13px">Parse → ISO</text><text class="s" x="320" y="992" text-anchor="middle">future given: flag</text>
+    <rect class="box" x="420" y="940" width="160" height="62" rx="6"/>
+    <text class="num" x="432" y="958">03</text><text class="t" x="500" y="975" text-anchor="middle" style="font-size:13px">Row × name</text><text class="s" x="500" y="992" text-anchor="middle">unknown names: flag</text>
+    <rect class="box" x="600" y="940" width="160" height="62" rx="6"/>
+    <text class="num" x="612" y="958">04</text><text class="t" x="680" y="975" text-anchor="middle" style="font-size:13px">Merge duplicates</text><text class="s" x="680" y="992" text-anchor="middle">tests split off</text>
+    <rect class="box" x="780" y="940" width="160" height="62" rx="6"/>
+    <text class="num" x="792" y="958">05</text><text class="t" x="860" y="975" text-anchor="middle" style="font-size:13px">Join reminders</text><text class="s" x="860" y="992" text-anchor="middle">to latest dose</text>
+
+    <rect class="box" x="60"  y="1022" width="160" height="62" rx="6"/>
+    <text class="num" x="72" y="1040">06</text><text class="t" x="140" y="1057" text-anchor="middle" style="font-size:13px">Derive due date</text><text class="s" x="140" y="1074" text-anchor="middle">printed interval only</text>
+    <rect class="box" x="240" y="1022" width="160" height="62" rx="6"/>
+    <text class="num" x="252" y="1040">07</text><text class="t" x="320" y="1057" text-anchor="middle" style="font-size:13px">Validate</text><text class="s" x="320" y="1074" text-anchor="middle">per-event reasons</text>
+    <rect class="box" x="420" y="1022" width="160" height="62" rx="6"/>
+    <text class="num" x="432" y="1040">08</text><text class="t" x="500" y="1057" text-anchor="middle" style="font-size:13px">isLatest + sort</text><text class="s" x="500" y="1074" text-anchor="middle">request order</text>
+    <rect class="box" x="600" y="1022" width="160" height="62" rx="6"/>
+    <text class="num" x="612" y="1040">09</text><text class="t" x="680" y="1057" text-anchor="middle" style="font-size:13px">Roll-up per name</text><text class="s" x="680" y="1074" text-anchor="middle">earliest expiry</text>
+    <rect class="box" x="780" y="1022" width="160" height="62" rx="6"/>
+    <text class="num" x="792" y="1040">10</text><text class="t" x="860" y="1057" text-anchor="middle" style="font-size:13px">Coverage check</text><text class="s" x="860" y="1074" text-anchor="middle">dated lines missed</text>
+  </g>
+  <path class="arrow" d="M220,971 H238"/><path class="arrow" d="M400,971 H418"/><path class="arrow" d="M580,971 H598"/><path class="arrow" d="M760,971 H778"/>
+  <path class="arrow" d="M860,1002 V1012 H140 V1020"/>
+  <path class="arrow" d="M220,1053 H238"/><path class="arrow" d="M400,1053 H418"/><path class="arrow" d="M580,1053 H598"/><path class="arrow" d="M760,1053 H778"/>
+
+  <path class="arrow" d="M500,1100 V1138"/>
+  <text class="edge" x="510" y="1124">Data + reviewReasons</text>
+
+  <!-- review gate + fallback -->
+  <rect class="gate" x="340" y="1140" width="320" height="48" rx="24"/>
+  <text class="t" x="500" y="1162" text-anchor="middle" style="font-size:13px">needsHumanReview, or LLM error?</text>
+  <text class="s" x="500" y="1179" text-anchor="middle">and VAX_FALLBACK_MODEL set</text>
+
+  <path class="arrow" d="M660,1164 H718"/><text class="edge" x="672" y="1156">yes</text>
+  <rect class="box" x="720" y="1126" width="240" height="96" rx="6" style="stroke:var(--llm)"/>
+  <text class="t" x="840" y="1148" text-anchor="middle">Fallback tier</text>
+  <text class="s" x="840" y="1166" text-anchor="middle">stronger model, same text</text>
+  <text class="s" x="840" y="1182" text-anchor="middle">+ page images if VISION=1</text>
+  <text class="s" x="840" y="1198" text-anchor="middle">re-runs steps 2 → 3</text>
+  <text class="s" x="840" y="1214" text-anchor="middle">keeps the better result</text>
+  <path class="arrow dash" d="M960,1174 H978 V776 H942"/>
+  <path class="arrow" d="M840,1222 V1250 H502"/>
+
+  <path class="arrow" d="M500,1188 V1260"/><text class="edge" x="440" y="1222">no</text>
+
+  <!-- result + outputs -->
+  <rect class="box" x="40" y="1262" width="920" height="50" rx="6" style="stroke:var(--fg)"/>
+  <text class="t" x="500" y="1283" text-anchor="middle">Result (schema.py)</text>
+  <text class="s" x="500" y="1301" text-anchor="middle">data.pets[] · meta{tier, source, ocrSeconds, llmSeconds, reviewReasons} · tokenUsage · usedFallback · duration</text>
+  <path class="arrow" d="M185,1312 V1356"/><path class="arrow" d="M500,1312 V1356"/><path class="arrow" d="M815,1312 V1356"/>
+
+  <rect class="hl" x="40" y="1358" width="290" height="110" rx="6"/>
+  <text class="t c-out" x="185" y="1382" text-anchor="middle">Client JSON</text>
+  <text class="s" x="185" y="1401" text-anchor="middle">Result.to_output() · default</text>
+  <text class="s" x="185" y="1418" text-anchor="middle">pets[].vaccinations: one per</text>
+  <text class="s" x="185" y="1434" text-anchor="middle">printed row · owner · clinic</text>
+  <text class="s" x="185" y="1450" text-anchor="middle">vet · tokenUsage · usedFallback</text>
+
+  <rect class="box" x="355" y="1358" width="290" height="110" rx="6"/>
+  <text class="t" x="500" y="1382" text-anchor="middle">Full result (--full)</text>
+  <text class="s" x="500" y="1401" text-anchor="middle">per-name roll-up · events[]</text>
+  <text class="s" x="500" y="1418" text-anchor="middle">printedRows[] · diagnosticTests[]</text>
+  <text class="s" x="500" y="1434" text-anchor="middle">→ web UI view</text>
+  <text class="s" x="500" y="1450" text-anchor="middle">→ eval.py vs gold/*.json</text>
+
+  <rect class="box" x="670" y="1358" width="290" height="110" rx="6"/>
+  <text class="t" x="815" y="1382" text-anchor="middle">Verification sheet</text>
+  <text class="s" x="815" y="1401" text-anchor="middle">sheet.py, when VAX_SHEET is set</text>
+  <text class="s" x="815" y="1418" text-anchor="middle">row per pet × requested name</text>
+  <text class="s" x="815" y="1434" text-anchor="middle">status · final_json column</text>
+  <text class="s" x="815" y="1450" text-anchor="middle">a failed write never fails a run</text>
+</svg>
+</div>
+
+<div class="notes">
+  <section>
+    <h2>Where the time goes</h2>
+    <ul>
+      <li>Band 1 (ingest + OCR + layout): about 2 s per document, logged as <code>meta.ocrSeconds</code>.</li>
+      <li>Band 2: the model generates in about 2 s but can wait 5–70 s for its first token. The hedged resend races a second request after 10 s.</li>
+      <li>Text-layer PDF pages skip preprocess and OCR entirely.</li>
+    </ul>
+  </section>
+  <section>
+    <h2>Review flags come from</h2>
+    <ul>
+      <li>Band 3 rules: unparseable or future given dates, names outside the request, missing pet name, no events.</li>
+      <li>Coverage check: a dated line that names a requested vaccine but produced no event.</li>
+      <li>Any flag sends the document to the fallback tier, when one is configured.</li>
+    </ul>
+  </section>
+  <section>
+    <h2>Configuration</h2>
+    <ul>
+      <li><code>VAX_LLM_*</code>: primary model, base URL, key, reasoning effort, hedge seconds.</li>
+      <li><code>VAX_FALLBACK_MODEL</code>, <code>VAX_FALLBACK_VISION</code>: optional escalation tier.</li>
+      <li><code>VAX_OCR</code>, <code>VAX_DEFAULT_DATE_ORDER</code>, <code>VAX_SHEET</code>, <code>VAX_EXPANSION_CACHE</code>.</li>
+    </ul>
+  </section>
+</div>
+</div>
+
+</body></html>

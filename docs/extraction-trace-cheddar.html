@@ -1,0 +1,479 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Cheddar Extraction Trace</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: one document followed through four stages, each a band with notes beside the real payload */
+:root {
+  --bg: #f4f7f6; --surface: #ffffff; --code: #f9fbfa; --fg: #15201c; --muted: #5a6964; --line: #c9d3cf;
+  --own: #0e7468; --own-bg: #e2f0ec;
+  --llm: #5048a8; --llm-bg: #ebe9f8;
+  --det: #3d5566; --det-bg: #e6ecf0;
+  --out: #a3560b; --out-bg: #fbeedd;
+  --warn: #9a3412;
+  --sans: "IBM Plex Sans", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #111816; --surface: #19221f; --code: #141c19; --fg: #e3ebe8; --muted: #93a39e; --line: #2f3c38;
+  --own: #4fc2b2; --own-bg: #16302b; --llm: #a49cf0; --llm-bg: #232040;
+  --det: #9fb7c7; --det-bg: #1c262d; --out: #f0a356; --out-bg: #33230f; --warn: #fb923c; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #111816; --surface: #19221f; --code: #141c19; --fg: #e3ebe8; --muted: #93a39e; --line: #2f3c38;
+  --own: #4fc2b2; --own-bg: #16302b; --llm: #a49cf0; --llm-bg: #232040;
+  --det: #9fb7c7; --det-bg: #1c262d; --out: #f0a356; --out-bg: #33230f; --warn: #fb923c; color-scheme: dark }
+
+body { background: var(--bg); color: var(--fg); font-family: var(--sans); line-height: 1.55; }
+.wrap { max-width: 1120px; margin: 0 auto; padding-block: 32px 56px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; gap: 32px; }
+h1 { font-size: 1.75rem; font-weight: 600; margin: 0; text-wrap: balance; }
+header p { margin: 6px 0 0; color: var(--muted); max-width: 72ch; }
+code { font-family: var(--mono); font-size: .88em; }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 20px; margin-top: 12px; font-family: var(--mono); font-size: .8rem; color: var(--muted); }
+
+.stage { display: grid; grid-template-columns: minmax(0, 300px) minmax(0, 1fr); gap: 16px 28px;
+  border-top: 3px solid var(--c); padding-top: 16px; }
+@media (max-width: 820px) { .stage { grid-template-columns: minmax(0, 1fr); } }
+.stage.own { --c: var(--own); --cb: var(--own-bg); }
+.stage.llm { --c: var(--llm); --cb: var(--llm-bg); }
+.stage.out { --c: var(--out); --cb: var(--out-bg); }
+.side { min-width: 0; }
+.eyebrow { font-size: .75rem; letter-spacing: .09em; text-transform: uppercase; font-weight: 600; color: var(--c); }
+h2 { font-size: 1.2rem; margin: 2px 0 6px; font-weight: 600; text-wrap: balance; }
+.side p { margin: 0 0 10px; font-size: .93rem; }
+.side ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; font-size: .9rem; }
+.src { font-family: var(--mono); font-size: .78rem; color: var(--muted); }
+.warn { color: var(--warn); }
+
+.panes { min-width: 0; display: grid; gap: 12px; }
+.pane { min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.pane > .bar { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 7px 12px;
+  background: var(--cb); font-family: var(--mono); font-size: .76rem; color: var(--fg); }
+.pane > .bar span:last-child { color: var(--muted); }
+pre { margin: 0; padding: 12px 14px; overflow: auto; max-height: 560px; background: var(--code);
+  font-family: var(--mono); font-size: .78rem; line-height: 1.55; white-space: pre; tab-size: 2; }
+details > summary { cursor: pointer; padding: 8px 12px; font-family: var(--mono); font-size: .78rem; background: var(--cb); list-style-position: inside; }
+details > summary:focus-visible { outline: 2px solid var(--c); outline-offset: -2px; }
+pre.wrapme { white-space: pre-wrap; word-break: break-word; }
+</style>
+
+<div class="wrap">
+<header>
+  <h1>One document through the pipeline</h1>
+  <p>A real run on <code>Unique Dataset/071f66fb-….jpeg</code>, a phone photo of a Star of Texas vaccination history for Cheddar, with the requested names <code>Bordetella; DHLPP / FVRCP; Rabies</code>. Every payload below is copied from that run, not mocked.</p>
+  <div class="meta"><span>RapidOCR · gemini-3.5-flash-lite</span><span>total 8.99 s</span><span>OCR + layout 4.25 s</span><span>1 LLM call (1979 in / 1104 out tokens)</span><span>definitions from cache</span></div>
+</header>
+
+<section class="stage own">
+  <div class="side">
+    <div class="eyebrow">Stage 1 · extractor output</div>
+    <h2>Layout text</h2>
+    <p>The only thing your module hands on: plain text, one printed line per line, table cells joined with <code> | </code>, each page opened by <code>=== PAGE n ===</code>.</p>
+    <ul>
+      <li>Phone photo, so it went preprocess → RapidOCR → <code>layout.serialize</code>. A text-layer PDF would skip OCR.</li>
+      <li class="warn">The DHPP row came out as one cell, <code>Canine Distemper Parvo Vaccine DHPP Vaccination 3-Year</code>: the gap between its first two columns was too narrow for a <code>|</code>.</li>
+      <li class="warn">The left edge is cropped in the photo: <code>ecal Examination</code>, <code>plicable, …</code>.</li>
+    </ul>
+    <p class="src">ingest.load → layout.serialize</p>
+  </div>
+  <div class="panes">
+    <div class="pane"><div class="bar"><span>layout text</span><span>str</span></div><pre>=== PAGE 1 ===
+Star of Texas Veterinary Hospital
+10706 Brodie Lane
+Austin, TX, 78748
+STAR | Ph: 512-291-1600
+Fax: 512-291-0495
+Email: info@stvh.vet
+Vaccination and Treatment History
+This is a record of vaccination for Cheddar Williams
+a Canine (Dog) Corgi, Welsh Mix of age 4y 3m 981020049077425
+Cheddar has received the following vaccinations and standard treatment:
+Veterinary Service(s) | Fulfilled With | Fulfilled At Due on
+Wellness Exam | Wellness Exam | 08-27-2026 | 08-27-2027
+Rabies Vaccine | Canine Rabies (Imrab 3 TF) 3-Year Vaccination | 08-27-2026 | 08-26-2029
+Heartworm Test | Heartworm Test (Occult) | 09-13-2024 | 09-13-2025
+Heartworm Prevention | Outside Heartworm Prevention (not carried in-house) | 06-01-2026 | 11-16-2026
+Bordetella Vaccine | Bordetella Oral Vaccination | 08-27-2026 | 08-27-2027
+Leptospirosis Vaccine | Canine Leptospirosis 1-Year Vaccination | 08-27-2026 | 08-27-2027
+Canine Distemper Parvo Vaccine DHPP Vaccination 3-Year | 08-27-2026 | 08-26-2029
+Wellness Blood Screen | Mini Chemistry Panel/Prep Panel | 01-17-2023 | 08-28-2025
+Influenza Vaccine | To Do
+Lyme Disease Vaccine | To Do
+Rattlesnake Vaccine | To Do
+Flea | Outside Flea/Tick Prevention (not carried in-house) | 06-01-2026 | 11-16-2026
+Tick | Outside Flea/Tick Prevention (not carried in-house) | 06-01-2026 | 01-25-2027
+ecal Examination | Antech Fecal Ova &amp; Parasite Float T805 | 08-27-2026 | 08-27-2027
+
+plicable, Cheddar is due for booster vaccinations or flea/tick/Heartworm treatment of the following in the next 30 days:
+
+Date of Certificate: 08-27-2026</pre></div>
+  </div>
+</section>
+
+<section class="stage llm">
+  <div class="side">
+    <div class="eyebrow">Stage 2 · LLM input</div>
+    <h2>Two chat messages</h2>
+    <p>An OpenAI-compatible chat call with a JSON schema attached for constrained decoding.</p>
+    <ul>
+      <li><b>System</b>: the fixed extraction rules from <code>prompt.py</code>, the same for every document.</li>
+      <li><b>User</b>: the requested names with the diseases each stands for (from the <code>expand_targets</code> cache), then the layout text from stage 1 unchanged.</li>
+      <li>The schema restricts <code>matches[].name</code> to exactly the three requested names.</li>
+    </ul>
+    <p class="src">prompt.user_prompt · llm.output_schema · llm.extract</p>
+  </div>
+  <div class="panes">
+    <div class="pane">
+      <details><summary>system message · SYSTEM_PROMPT (fixed)</summary><pre class="wrapme">You are an information-extraction engine for veterinary vaccination documents (certificates, invoices, history printouts, reminder lists, screenshots, phone photos). The user message contains OCR text of ONE document: lines in reading order, cells of the same row separated by &#x27; | &#x27;, pages separated by &#x27;=== PAGE n ===&#x27;. OCR may contain errors. It may also contain a list of REQUESTED VACCINE NAMES.
+
+Return ONE JSON object and nothing else:
+{
+ &quot;pets&quot;: [{&quot;name&quot;: str|null, &quot;species&quot;: str|null, &quot;breed&quot;: str|null, &quot;sex&quot;: str|null, &quot;weight&quot;: str|null, &quot;color&quot;: str|null, &quot;microchipNumber&quot;: str|null,
+   &quot;events&quot;: [{&quot;raw_name&quot;: str, &quot;kind&quot;: &quot;vaccine&quot;|&quot;diagnostic&quot;|&quot;other&quot;, &quot;given_date&quot;: str|null, &quot;due_date&quot;: str|null, &quot;duration_months&quot;: int|null,
+     &quot;matches&quot;: [{&quot;name&quot;: str, &quot;partial&quot;: bool, &quot;duration_months&quot;: int|null}]}]}],
+ &quot;owner&quot;: {&quot;name&quot;: str|null, &quot;address&quot;: str|null, &quot;phone&quot;: str|null, &quot;email&quot;: str|null},
+ &quot;clinic&quot;: {&quot;name&quot;: str|null, &quot;address&quot;: str|null, &quot;phone&quot;: str|null, &quot;email&quot;: str|null, &quot;website&quot;: str|null},
+ &quot;veterinarian&quot;: {&quot;name&quot;: str|null, &quot;licenseNumber&quot;: str|null}
+}
+
+Rules:
+1. PET NAME comes from labels such as Patient, Patient Name, Animal, Pet, &#x27;For:&#x27; (invoice line items) or the record title. Never use the owner, veterinarian, signer or clinic name. Keep the name as printed. One entry in &quot;pets&quot; per animal.
+2. EVENTS: one entry per printed vaccine or diagnostic-test line: vaccination history rows, certificate rows, charged invoice items, reminder / due rows, previous-vaccination blocks. Include historical rows, boosters and &#x27;exp:&#x27; / reminder lines; go through every line that names a vaccine so none is skipped. kind = &quot;vaccine&quot; for vaccinations, &quot;diagnostic&quot; for tests, &quot;other&quot; for anything else (exams, preventive medications, fees, ...); &quot;other&quot; items may be omitted.
+3. raw_name: the item&#x27;s name copied EXACTLY as printed, character for character: keep every word, parenthesis, interval, code and number in it (&#x27;Rabies Canine (3yr)&#x27;, &#x27;DA2PPV+ Rabies, #2516470266&#x27;), its capitalisation and punctuation; never shorten, expand, correct, translate or add words to it. It is only the name: not a date, staff initials, quantity or price from other columns of the row. Keep combination names intact: one event per printed line, never split it. In a grouped history table the name is printed only on the first row of each group and the following rows start with a date: those rows belong to that name (also when the group continues on the next page), so raw_name is that name, never a date.
+4. DATES: copy EXACTLY as printed. Never reformat, convert, compute or guess a date.
+ - given_date = date the vaccine was administered: the date on its row; else the date in a section header or sentence; else, for an INVOICE, the invoice date, but only for items listed as charged/performed on that invoice. Items that appear ONLY in a reminder / due list have given_date null.
+ - due_date = next-due / due / expires / valid-until / reminder date of that item. A date printed once above several lines applies to every following line until the next date. But a date alone on its own line directly below an item&#x27;s line is that item&#x27;s wrapped date (usually its due date), not a header for the lines that follow.
+ - If the same vaccine appears both as an administered row and in a separate due/reminder list, output separate entries exactly as printed; do not merge them or copy dates between them.
+ - NEVER use as dates: lot or product expiry, birth dates, ages, appointment dates, tag/serial/microchip/licence numbers, the print date of a document for reminder-only items.
+5. duration_months: the validity interval printed for the item (&#x27;3 Yr&#x27; -&gt; 36, &#x27;annual&#x27; -&gt; 12), else null. Never infer it from typical schedules.
+6. matches (vaccines only): every REQUESTED VACCINE NAME that this item protects against. Copy each name exactly as listed; never add a name that is not in the list.
+ - Each requested name may be listed with the diseases it stands for; use those definitions. Otherwise work them out: expand abbreviations letter by letter or part by part (each letter or part of a combination abbreviation is one disease), and treat names joined by &#x27;/&#x27; as alternatives (e.g. one per species).
+ - Then judge which diseases the item protects against from its printed name, product or abbreviation, tolerating OCR misspellings, and using the pet&#x27;s species where a name depends on it.
+ - The item matches a requested name if it protects against at least one of that name&#x27;s diseases. A combination item matches every requested name it covers. partial = true when the item covers only some of the diseases that name (or the alternative that fits the pet) stands for. duration_months on a match = the interval printed next to that component inside a combination name, else null. Use [] when nothing fits or no list is given.
+7. Use null for anything not printed. Never invent values.</pre></details>
+    </div>
+    <div class="pane"><div class="bar"><span>user message · header</span><span>targets + definitions</span></div><pre class="wrapme">REQUESTED VACCINE NAMES (= the diseases each stands for):
+- Bordetella = Bordetella (canine): Bordetella bronchiseptica infection | Bordetella (feline): Bordetella bronchiseptica infection
+- DHLPP / FVRCP = DHLPP (canine): Distemper, Hepatitis, Leptospirosis, Parainfluenza, Parvovirus | FVRCP (feline): Feline Viral Rhinotracheitis, Calicivirus, Panleukopenia
+- Rabies = Rabies: Rabies
+
+Document OCR text (may contain errors):</pre></div>
+    <div class="pane"><div class="bar"><span>user message · body</span><span>= stage 1 output</span></div><pre>=== PAGE 1 ===
+Star of Texas Veterinary Hospital
+10706 Brodie Lane
+Austin, TX, 78748
+STAR | Ph: 512-291-1600
+Fax: 512-291-0495
+Email: info@stvh.vet
+Vaccination and Treatment History
+This is a record of vaccination for Cheddar Williams
+a Canine (Dog) Corgi, Welsh Mix of age 4y 3m 981020049077425
+Cheddar has received the following vaccinations and standard treatment:
+Veterinary Service(s) | Fulfilled With | Fulfilled At Due on
+Wellness Exam | Wellness Exam | 08-27-2026 | 08-27-2027
+Rabies Vaccine | Canine Rabies (Imrab 3 TF) 3-Year Vaccination | 08-27-2026 | 08-26-2029
+Heartworm Test | Heartworm Test (Occult) | 09-13-2024 | 09-13-2025
+Heartworm Prevention | Outside Heartworm Prevention (not carried in-house) | 06-01-2026 | 11-16-2026
+Bordetella Vaccine | Bordetella Oral Vaccination | 08-27-2026 | 08-27-2027
+Leptospirosis Vaccine | Canine Leptospirosis 1-Year Vaccination | 08-27-2026 | 08-27-2027
+Canine Distemper Parvo Vaccine DHPP Vaccination 3-Year | 08-27-2026 | 08-26-2029
+Wellness Blood Screen | Mini Chemistry Panel/Prep Panel | 01-17-2023 | 08-28-2025
+Influenza Vaccine | To Do
+Lyme Disease Vaccine | To Do
+Rattlesnake Vaccine | To Do
+Flea | Outside Flea/Tick Prevention (not carried in-house) | 06-01-2026 | 11-16-2026
+Tick | Outside Flea/Tick Prevention (not carried in-house) | 06-01-2026 | 01-25-2027
+ecal Examination | Antech Fecal Ova &amp; Parasite Float T805 | 08-27-2026 | 08-27-2027
+
+plicable, Cheddar is due for booster vaccinations or flea/tick/Heartworm treatment of the following in the next 30 days:
+
+Date of Certificate: 08-27-2026</pre></div>
+  </div>
+</section>
+
+<section class="stage llm">
+  <div class="side">
+    <div class="eyebrow">Stage 3 · LLM output</div>
+    <h2>RawExtraction JSON</h2>
+    <p>Returned as a single line of 2779 characters; shown here indented. Dates are still exactly as printed (<code>08-27-2026</code>).</p>
+    <ul>
+      <li>One event per printed line, including exams, tests and preventives (<code>kind: other / diagnostic</code>), which post-processing drops from the vaccine list.</li>
+      <li><code>matches</code> carries the mapping: Leptospirosis and the DHPP row both map to <code>DHLPP / FVRCP</code> with <code>partial: true</code>.</li>
+      <li class="warn">For Rabies the model took the first column (<code>Rabies Vaccine</code>) rather than the product name <code>Canine Rabies (Imrab 3 TF) 3-Year Vaccination</code>.</li>
+      <li>Influenza, Lyme and Rattlesnake are "To Do" rows: vaccines with no dates and no match.</li>
+    </ul>
+    <p class="src">schema.RawExtraction</p>
+  </div>
+  <div class="panes">
+    <div class="pane"><div class="bar"><span>assistant message · parsed</span><span>validated as RawExtraction</span></div><pre>{
+  &quot;pets&quot;: [
+    {
+      &quot;name&quot;: &quot;Cheddar Williams&quot;,
+      &quot;species&quot;: &quot;Canine (Dog)&quot;,
+      &quot;breed&quot;: &quot;Corgi, Welsh Mix&quot;,
+      &quot;sex&quot;: null,
+      &quot;weight&quot;: null,
+      &quot;color&quot;: null,
+      &quot;microchipNumber&quot;: &quot;981020049077425&quot;,
+      &quot;events&quot;: [
+        {
+          &quot;raw_name&quot;: &quot;Wellness Exam&quot;,
+          &quot;kind&quot;: &quot;other&quot;,
+          &quot;given_date&quot;: &quot;08-27-2026&quot;,
+          &quot;due_date&quot;: &quot;08-27-2027&quot;,
+          &quot;duration_months&quot;: null,
+          &quot;matches&quot;: []
+        },
+        {
+          &quot;raw_name&quot;: &quot;Rabies Vaccine&quot;,
+          &quot;kind&quot;: &quot;vaccine&quot;,
+          &quot;given_date&quot;: &quot;08-27-2026&quot;,
+          &quot;due_date&quot;: &quot;08-26-2029&quot;,
+          &quot;duration_months&quot;: 36,
+          &quot;matches&quot;: [
+            {
+              &quot;name&quot;: &quot;Rabies&quot;,
+              &quot;partial&quot;: false,
+              &quot;duration_months&quot;: 36
+            }
+          ]
+        },
+        {
+          &quot;raw_name&quot;: &quot;Heartworm Test&quot;,
+          &quot;kind&quot;: &quot;diagnostic&quot;,
+          &quot;given_date&quot;: &quot;09-13-2024&quot;,
+          &quot;due_date&quot;: &quot;09-13-2025&quot;,
+          &quot;duration_months&quot;: null,
+          &quot;matches&quot;: []
+        },
+        {
+          &quot;raw_name&quot;: &quot;Heartworm Prevention&quot;,
+          &quot;kind&quot;: &quot;other&quot;,
+          &quot;given_date&quot;: &quot;06-01-2026&quot;,
+          &quot;due_date&quot;: &quot;11-16-2026&quot;,
+          &quot;duration_months&quot;: null,
+          &quot;matches&quot;: []
+        },
+        {
+          &quot;raw_name&quot;: &quot;Bordetella Vaccine&quot;,
+          &quot;kind&quot;: &quot;vaccine&quot;,
+          &quot;given_date&quot;: &quot;08-27-2026&quot;,
+          &quot;due_date&quot;: &quot;08-27-2027&quot;,
+          &quot;duration_months&quot;: 12,
+          &quot;matches&quot;: [
+            {
+              &quot;name&quot;: &quot;Bordetella&quot;,
+              &quot;partial&quot;: false,
+              &quot;duration_months&quot;: 12
+            }
+          ]
+        },
+        {
+          &quot;raw_name&quot;: &quot;Leptospirosis Vaccine&quot;,
+          &quot;kind&quot;: &quot;vaccine&quot;,
+          &quot;given_date&quot;: &quot;08-27-2026&quot;,
+          &quot;due_date&quot;: &quot;08-27-2027&quot;,
+          &quot;duration_months&quot;: 12,
+          &quot;matches&quot;: [
+            {
+              &quot;name&quot;: &quot;DHLPP / FVRCP&quot;,
+              &quot;partial&quot;: true,
+              &quot;duration_months&quot;: 12
+            }
+          ]
+        },
+        {
+          &quot;raw_name&quot;: &quot;Canine Distemper Parvo Vaccine DHPP Vaccination 3-Year&quot;,
+          &quot;kind&quot;: &quot;vaccine&quot;,
+          &quot;given_date&quot;: &quot;08-27-2026&quot;,
+          &quot;due_date&quot;: &quot;08-26-2029&quot;,
+          &quot;duration_months&quot;: 36,
+          &quot;matches&quot;: [
+            {
+              &quot;name&quot;: &quot;DHLPP / FVRCP&quot;,
+              &quot;partial&quot;: true,
+              &quot;duration_months&quot;: 36
+            }
+          ]
+        },
+        {
+          &quot;raw_name&quot;: &quot;Wellness Blood Screen&quot;,
+          &quot;kind&quot;: &quot;diagnostic&quot;,
+          &quot;given_date&quot;: &quot;01-17-2023&quot;,
+          &quot;due_date&quot;: &quot;08-28-2025&quot;,
+          &quot;duration_months&quot;: null,
+          &quot;matches&quot;: []
+        },
+        {
+          &quot;raw_name&quot;: &quot;Influenza Vaccine&quot;,
+          &quot;kind&quot;: &quot;vaccine&quot;,
+          &quot;given_date&quot;: null,
+          &quot;due_date&quot;: null,
+          &quot;duration_months&quot;: null,
+          &quot;matches&quot;: []
+        },
+        {
+          &quot;raw_name&quot;: &quot;Lyme Disease Vaccine&quot;,
+          &quot;kind&quot;: &quot;vaccine&quot;,
+          &quot;given_date&quot;: null,
+          &quot;due_date&quot;: null,
+          &quot;duration_months&quot;: null,
+          &quot;matches&quot;: []
+        },
+        {
+          &quot;raw_name&quot;: &quot;Rattlesnake Vaccine&quot;,
+          &quot;kind&quot;: &quot;vaccine&quot;,
+          &quot;given_date&quot;: null,
+          &quot;due_date&quot;: null,
+          &quot;duration_months&quot;: null,
+          &quot;matches&quot;: []
+        },
+        {
+          &quot;raw_name&quot;: &quot;Flea&quot;,
+          &quot;kind&quot;: &quot;other&quot;,
+          &quot;given_date&quot;: &quot;06-01-2026&quot;,
+          &quot;due_date&quot;: &quot;11-16-2026&quot;,
+          &quot;duration_months&quot;: null,
+          &quot;matches&quot;: []
+        },
+        {
+          &quot;raw_name&quot;: &quot;Tick&quot;,
+          &quot;kind&quot;: &quot;other&quot;,
+          &quot;given_date&quot;: &quot;06-01-2026&quot;,
+          &quot;due_date&quot;: &quot;01-25-2027&quot;,
+          &quot;duration_months&quot;: null,
+          &quot;matches&quot;: []
+        },
+        {
+          &quot;raw_name&quot;: &quot;ecal Examination&quot;,
+          &quot;kind&quot;: &quot;diagnostic&quot;,
+          &quot;given_date&quot;: &quot;08-27-2026&quot;,
+          &quot;due_date&quot;: &quot;08-27-2027&quot;,
+          &quot;duration_months&quot;: null,
+          &quot;matches&quot;: []
+        }
+      ]
+    }
+  ],
+  &quot;owner&quot;: {
+    &quot;name&quot;: null,
+    &quot;address&quot;: null,
+    &quot;phone&quot;: null,
+    &quot;email&quot;: null
+  },
+  &quot;clinic&quot;: {
+    &quot;name&quot;: &quot;Star of Texas Veterinary Hospital&quot;,
+    &quot;address&quot;: &quot;10706 Brodie Lane, Austin, TX, 78748&quot;,
+    &quot;phone&quot;: &quot;512-291-1600&quot;,
+    &quot;email&quot;: &quot;info@stvh.vet&quot;,
+    &quot;website&quot;: null
+  },
+  &quot;veterinarian&quot;: {
+    &quot;name&quot;: null,
+    &quot;licenseNumber&quot;: null
+  }
+}</pre></div>
+  </div>
+</section>
+
+<section class="stage out">
+  <div class="side">
+    <div class="eyebrow">After post-process · the product</div>
+    <h2>Client JSON</h2>
+    <p>For comparison, what the same run returned after the deterministic rules in <code>postprocess.py</code>.</p>
+    <ul>
+      <li>Dates are now ISO, ordered month-first (inferred for the whole document).</li>
+      <li>Exams, tests, flea/tick and heartworm prevention are gone; only vaccine rows remain.</li>
+      <li>The three undated "To Do" vaccines are kept and flagged, which is why the document reports <code>3 vaccination event(s) flagged</code>.</li>
+      <li>Empty fields (owner, vet, website) are omitted.</li>
+    </ul>
+    <p class="src">Result.to_output()</p>
+  </div>
+  <div class="panes">
+    <div class="pane"><div class="bar"><span>client payload</span><span>API / CLI default</span></div><pre>{
+  &quot;data&quot;: {
+    &quot;pets&quot;: [
+      {
+        &quot;name&quot;: &quot;Cheddar Williams&quot;,
+        &quot;species&quot;: &quot;Canine (Dog)&quot;,
+        &quot;breed&quot;: &quot;Corgi, Welsh Mix&quot;,
+        &quot;microchipNumber&quot;: &quot;981020049077425&quot;,
+        &quot;vaccinations&quot;: [
+          {
+            &quot;partialMatch&quot;: false,
+            &quot;matchedComponents&quot;: [],
+            &quot;name&quot;: &quot;Rabies Vaccine&quot;,
+            &quot;dateAdministered&quot;: &quot;2026-08-27&quot;,
+            &quot;expirationDate&quot;: &quot;2029-08-26&quot;,
+            &quot;needsHumanReview&quot;: false
+          },
+          {
+            &quot;partialMatch&quot;: false,
+            &quot;matchedComponents&quot;: [],
+            &quot;name&quot;: &quot;Bordetella Vaccine&quot;,
+            &quot;dateAdministered&quot;: &quot;2026-08-27&quot;,
+            &quot;expirationDate&quot;: &quot;2027-08-27&quot;,
+            &quot;needsHumanReview&quot;: false
+          },
+          {
+            &quot;partialMatch&quot;: true,
+            &quot;matchedComponents&quot;: [
+              &quot;DHLPP / FVRCP&quot;
+            ],
+            &quot;name&quot;: &quot;Leptospirosis Vaccine&quot;,
+            &quot;dateAdministered&quot;: &quot;2026-08-27&quot;,
+            &quot;expirationDate&quot;: &quot;2027-08-27&quot;,
+            &quot;needsHumanReview&quot;: false
+          },
+          {
+            &quot;partialMatch&quot;: true,
+            &quot;matchedComponents&quot;: [
+              &quot;DHLPP / FVRCP&quot;
+            ],
+            &quot;name&quot;: &quot;Canine Distemper Parvo Vaccine DHPP Vaccination 3-Year&quot;,
+            &quot;dateAdministered&quot;: &quot;2026-08-27&quot;,
+            &quot;expirationDate&quot;: &quot;2029-08-26&quot;,
+            &quot;needsHumanReview&quot;: false
+          },
+          {
+            &quot;partialMatch&quot;: false,
+            &quot;matchedComponents&quot;: [],
+            &quot;name&quot;: &quot;Influenza Vaccine&quot;,
+            &quot;needsHumanReview&quot;: true
+          },
+          {
+            &quot;partialMatch&quot;: false,
+            &quot;matchedComponents&quot;: [],
+            &quot;name&quot;: &quot;Lyme Disease Vaccine&quot;,
+            &quot;needsHumanReview&quot;: true
+          },
+          {
+            &quot;partialMatch&quot;: false,
+            &quot;matchedComponents&quot;: [],
+            &quot;name&quot;: &quot;Rattlesnake Vaccine&quot;,
+            &quot;needsHumanReview&quot;: true
+          }
+        ]
+      }
+    ],
+    &quot;clinic&quot;: {
+      &quot;name&quot;: &quot;Star of Texas Veterinary Hospital&quot;,
+      &quot;address&quot;: &quot;10706 Brodie Lane, Austin, TX, 78748&quot;,
+      &quot;phone&quot;: &quot;512-291-1600&quot;,
+      &quot;email&quot;: &quot;info@stvh.vet&quot;
+    }
+  },
+  &quot;duration&quot;: 8.985,
+  &quot;tokenUsage&quot;: {
+    &quot;inputTokens&quot;: 1979,
+    &quot;outputTokens&quot;: 1104,
+    &quot;totalTokens&quot;: 3083
+  },
+  &quot;usedFallback&quot;: false
+}</pre></div>
+  </div>
+</section>
+</div>
+
+</body></html>
