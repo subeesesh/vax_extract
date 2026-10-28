@@ -1,6 +1,7 @@
 """Token (word/line + bbox) -> row-structured text that preserves table/section structure."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 
@@ -56,6 +57,54 @@ def _untilted_centers(toks: list[Token]) -> dict[int, float]:
     return out
 
 
+_MON = r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?"
+_PARTIAL_DATE = re.compile(rf"^(?:\d{{1,2}}[-/. ]?{_MON}|{_MON}[-/. ]?\d{{1,2}},?|\d{{1,2}}[-/]\d{{1,2}})$", re.I)
+_YEAR = re.compile(r"^(?:19|20)\d{2}$")
+_FULL_DATE = re.compile(rf"^(?:\d{{1,2}}[-/.]\d{{1,2}}[-/.]\d{{2,4}}|\d{{4}}[-/.]\d{{1,2}}[-/.]\d{{1,2}}"
+                        rf"|\d{{1,2}}[-/. ]?{_MON}[-/. ,]*\d{{2,4}}|{_MON}[-/. ]?\d{{1,2}}[, ]+\d{{2,4}})$", re.I)
+
+
+def _join(a: Token, b: Token) -> Token:
+    return Token(f"{a.text} {b.text}", min(a.x0, b.x0), min(a.y0, b.y0), max(a.x1, b.x1), max(a.y1, b.y1),
+                 min(a.conf, b.conf), a.style, a.slope)
+
+
+def _join_wrapped_cells(rows: list[list[Token]], med_h: float, stacked) -> list[list[Token]]:
+    """Repair table cells that wrap onto a second line (narrow date columns in emails and phone PDFs).
+    1. '25-Mar' with '2026' right below it is one date: join them. The row's other cells (the vaccine name,
+       centred on the second line) then join the row too, when no cell of the two lines stacks.
+    2. A line holding only a full date, tight under a row and indented from its start, is that row's
+       overflowed last cell (a due date printed under its row): append it to the row's last cell as a
+       cell of its own. The last cell keeps its x range, so the date prints after it, not where it sits."""
+    out: list[list[Token]] = []
+    for row in rows:
+        prev = out[-1] if out else None
+        near = prev is not None and min(t.y0 for t in row) - max(t.y1 for t in prev) <= med_h
+        if near:
+            joined = False
+            for b in list(row):
+                if not _YEAR.match(b.text.strip()):
+                    continue
+                a = next((a for a in prev if _PARTIAL_DATE.match(a.text.strip()) and stacked(a, b)), None)
+                if a is not None:
+                    prev[prev.index(a)] = _join(a, b)
+                    row.remove(b)
+                    joined = True
+            if joined and not any(stacked(t, a) for t in row for a in prev):
+                prev.extend(row)
+                continue
+            if (len(row) == 1 and _FULL_DATE.match(row[0].text.strip()) and len(prev) > 1
+                    and row[0].x0 > min(t.x0 for t in prev) + 2 * med_h):
+                last = max(prev, key=lambda t: t.x1)
+                prev[prev.index(last)] = Token(f"{last.text} | {row[0].text}", last.x0, last.y0, last.x1,
+                                               max(last.y1, row[0].y1), min(last.conf, row[0].conf),
+                                               last.style, last.slope)
+                continue
+        if row:
+            out.append(row)
+    return out
+
+
 def serialize_page(tokens: list[Token], col_gap_chars: float = 1.5) -> str:
     toks = [t for t in tokens if t.text and t.text.strip()]
     if not toks:
@@ -107,6 +156,7 @@ def serialize_page(tokens: list[Token], col_gap_chars: float = 1.5) -> str:
         if not moved:
             break
     rows = [r for r in rows if r]
+    rows = _join_wrapped_cells(rows, med_h, stacked)
 
     lines, prev_bottom = [], None
     for row in rows:
