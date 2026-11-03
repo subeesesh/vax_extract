@@ -1,55 +1,67 @@
 {
-  "data": {
-    "pets": [
-      {
-        "name": "Buddy",
-        "species": "Canine",
-        "breed": "Labrador Retriever",
-        "sex": "Male (Neutered)",
-        "weight": "64.2 lbs",
-        "color": "Black",
-        "microchipNumber": "985112000000000",
-        "vaccinations": [
-          {
-            "partialMatch": false,
-            "matchedComponents": [],
-            "name": "Rabies Vaccination 3 Year",
-            "dateAdministered": "2026-10-20",
-            "expirationDate": "2029-10-19",
-            "needsHumanReview": false
-          },
-          {
-            "partialMatch": true,
-            "matchedComponents": ["DHLPP / FVRCP"],
-            "name": "DAPP Annual Vaccine",
-            "dateAdministered": "2026-10-20",
-            "expirationDate": "2027-10-20",
-            "needsHumanReview": false
-          },
-          {
-            "partialMatch": false,
-            "matchedComponents": [],
-            "name": "Rabies Vaccination 1 Year",
-            "dateAdministered": "2022-05-03",
-            "needsHumanReview": false
-          }
-        ]
-      }
-    ],
-    "owner": {"name": "Jane Doe", "address": "1 Main St\nAnytown, TX 75001", "phone": "555-010-0000"},
-    "clinic": {"name": "Example Animal Hospital", "address": "100 Clinic Rd\nAnytown, TX 75001",
-               "phone": "555-010-1111", "email": "front@example.vet", "website": "www.example.vet"},
-    "veterinarian": {"name": "Dr. A. Smith, DVM", "licenseNumber": "TX 12345"}
-  },
+  "pets": [
+    {
+      "name": "Toad",
+      "species": "Canine",
+      "breed": "Lab mix",
+      "sex": "MN",
+      "weight": "65.6lbs.",
+      "microchipNumber": "033337",
+      "vaccinations": [
+        {
+          "name": "Bordetella",
+          "dateAdministered": "2026-10-22",
+          "expirationDate": "2027-10-22",
+          "matchedComponents": [
+            {"name": "*Bordetella Vaccine", "dateAdministered": "2026-10-22", "expirationDate": "2027-10-22"}
+          ]
+        },
+        {
+          "name": "DHLPP / FVRCP",
+          "dateAdministered": "2025-10-24",
+          "expirationDate": "2026-10-24",
+          "partialMatch": true,
+          "needsHumanReview": true,
+          "matchedComponents": [
+            {"name": "*Distemper/Parvo Vaccine", "dateAdministered": "2025-10-24", "expirationDate": "2026-10-24"}
+          ]
+        },
+        {
+          "name": "Rabies",
+          "dateAdministered": "2025-10-24",
+          "expirationDate": "2028-10-24",
+          "matchedComponents": [
+            {"name": "*Rabies Vaccine 3 Year", "dateAdministered": "2025-10-24"},
+            {"name": "*Rabies Vaccine", "dateAdministered": "2024-10-20", "expirationDate": "2025-10-20"}
+          ]
+        },
+        {
+          "name": "Canine Influenza",
+          "dateAdministered": null,
+          "expirationDate": null,
+          "matchedComponents": []
+        }
+      ]
+    }
+  ],
+  "owner": {"name": "Claire Schmotzer", "address": "1291 Elizabeth Ave Unit 1
+Las Vegas, NV 89119"},
+  "clinic": {"name": "Aloha Animal Hospital", "address": "7341 South Torrey Pines Drive
+Las Vegas, NV 89139",
+             "phone": "(702) 567-5222"},
+  "veterinarian": {"name": "Dr. Anne Beckes"},
   "duration": 6.2,
-  "tokenUsage": {"inputTokens": 2100, "outputTokens": 640, "totalTokens": 2740},
-  "usedFallback": false
+  "tokenUsage": {"inputTokens": 2100, "outputTokens": 640, "totalTokens": 2740}
 }
 
 Notes
-- pets[].name is the pet; one entry per pet on the document (multi-pet invoices give several).
-- vaccinations[]: one entry per printed vaccine row, name exactly as printed; given doses newest first,
-  then reminder-only rows (no dateAdministered) soonest due first.
-- partialMatch / matchedComponents: the requested vaccine names (per request) that the row covers only partly.
-- A combination row whose components expire at different dates gets the earliest expiry.
-- Fields that were not found are omitted (e.g. no expirationDate, no veterinarian).
+- pets[]: one entry per pet on the document (multi-pet invoices give several), each with its own vaccinations.
+- vaccinations[]: one entry per requested vaccine name, in request order. Printed vaccines nobody asked for are left out.
+- name is the requested name. dateAdministered / expirationDate are those of the latest dose; the expiry may be
+  worked out from a printed interval ('3 Year') when no expiry date is printed. A combination expires with its
+  first-expiring part.
+- matchedComponents: every printed row matched to that name, newest first. name and dates exactly as on the document;
+  a date the document does not print is left out (never calculated).
+- Requested but not on the document: dateAdministered and expirationDate are null, matchedComponents is [].
+- partialMatch / needsHumanReview appear only when true (partialMatch: the printed rows cover only part of the name).
+- Empty pet / owner / clinic / veterinarian fields are left out. There is no confidence score.

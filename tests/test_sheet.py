@@ -33,7 +33,7 @@ def test_creates_appends_and_replaces(tmp_path):
     assert (rab["PetName"], rab["POName"], rab["status"], rab["is_verified_by_ai"]) == ("Roo", "Gary", "Verified", True)
     assert rab["Expiration_date"].date().isoformat() == "2028-01-01"
     assert json.loads(rab["final_json"]) == _result("2028-01-01").to_output()  # full client payload
-    assert set(json.loads(rab["final_json"])) == {"data", "duration", "tokenUsage", "usedFallback"}
+    assert set(json.loads(rab["final_json"])) == {"pets", "owner", "duration", "tokenUsage"}
     assert (bord["status"], bord["Results - Comment"]) == ("Not found", "not on document")
     assert bord["final_json"] == rab["final_json"]
 
@@ -43,7 +43,7 @@ def test_no_pets_gives_one_not_found_row(tmp_path):
     update_sheet(p, Result(data=Data()), "c.jpg", "vx")
     [r] = _rows(p)
     assert (r["status"], r["Document_URL"]) == ("Not found", "c.jpg")
-    assert json.loads(r["final_json"])["data"] == {"pets": []}
+    assert json.loads(r["final_json"])["pets"] == []
 
 
 def test_no_requested_names_gives_one_row_per_printed_vaccination(tmp_path):
@@ -54,4 +54,4 @@ def test_no_requested_names_gives_one_row_per_printed_vaccination(tmp_path):
     got = _rows(p)
     assert [(r["Immunization_Type_Name"], r["status"]) for r in got] == [("RABIES 3YR", "Extracted"), ("DA2PP", "Needs review")]
     assert got[0]["Expiration_date"].date().isoformat() == "2027-02-28"
-    assert json.loads(got[0]["final_json"])["data"]["pets"][0]["vaccinations"][0]["matchedComponents"] == []
+    assert [v["name"] for v in json.loads(got[0]["final_json"])["pets"][0]["vaccinations"]] == ["RABIES 3YR", "DA2PP"]

@@ -152,6 +152,7 @@ td.d { white-space: nowrap; }
 pre { margin: 0 0 12px; padding: 14px; max-height: 420px; overflow: auto; background: var(--page); border-radius: 4px; font: 12px/1.45 ui-monospace, Consolas, monospace; }
 .json-actions { display: flex; gap: 10px; padding-bottom: 14px; }
 
+
 /* ---------- states ---------- */
 .waiting { padding: 36px 26px; background: var(--sheet); border: 1px solid var(--rule); border-radius: 2px; }
 .waiting strong { font-size: 18px; font-weight: 700; font-stretch: 112%; }
@@ -440,7 +441,11 @@ function render(res) {
     <div><dt>Read in</dt><dd>${res.duration.toFixed(1)} s</dd></div>
     <div><dt>Pages</dt><dd>${meta.pages}</dd></div>
   </dl>
-  <details open style="margin-top:16px"><summary>Final JSON <span>the output, as returned by the API and stored in the sheet</span></summary>
+  ${meta.layoutText ? `<details open style="margin-top:16px"><summary>Layout text <span>what the OCR read and the LLM received</span></summary>
+    <pre class="layout-text">${esc(meta.layoutText)}</pre>
+    <div class="json-actions"><button class="btn2" id="copyText" type="button">Copy text</button><button class="btn2" id="dlText" type="button">Download .txt</button></div>
+  </details>` : ""}
+  <details open${meta.layoutText ? "" : ' style="margin-top:16px"'}><summary>Final JSON <span>the output, as returned by the API and stored in the sheet</span></summary>
     <pre>${esc(JSON.stringify(res.output, null, 2))}</pre>
     <div class="json-actions"><button class="btn2" id="copyJson" type="button">Copy JSON</button><button class="btn2" id="dlJson" type="button">Download JSON</button></div>
   </details>`;
@@ -456,6 +461,16 @@ function render(res) {
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([JSON.stringify(lastResult.output, null, 2)], { type: "application/json" }));
     a.download = (file?.name || "record").replace(/\.[^.]+$/, "") + ".json"; a.click();
+  };
+  if (!$("#copyText")) return;
+  $("#copyText").onclick = async (e) => {
+    try { await navigator.clipboard.writeText(lastResult.meta.layoutText); e.target.textContent = "Copied"; }
+    catch { e.target.textContent = "Copy blocked by browser"; }
+  };
+  $("#dlText").onclick = () => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([lastResult.meta.layoutText], { type: "text/plain" }));
+    a.download = (file?.name || "record").replace(/\.[^.]+$/, "") + ".layout.txt"; a.click();
   };
 }
 </script>

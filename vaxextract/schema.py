@@ -154,6 +154,8 @@ class Meta(BaseModel):
     llmSeconds: float = 0.0  # LLM call(s) + post-processing, all tiers
     needsHumanReview: bool = False
     reviewReasons: list[str] = Field(default_factory=list)
+    sources: list[str] = Field(default_factory=list)  # per page: text_layer | ocr
+    layoutText: str = ""  # the serialized OCR/layout text the LLM read (shown in the web UI)
 
 
 class Result(BaseModel):
@@ -164,85 +166,64 @@ class Result(BaseModel):
     meta: Meta = Field(default_factory=Meta)
 
     def to_output(self) -> dict:
-        """The slim client payload: one vaccination per printed row (name as printed), owner/clinic/veterinarian
-        and run stats; empty fields are omitted."""
-        return OutputResult(data=OutputData(pets=[
-            OutputPet(**{k: getattr(p, k) for k in _PET_FIELDS}, vaccinations=_printed_rows(p.printedRows))
-            for p in self.data.pets],
-            **{k: _party(getattr(self.data, k)) for k in ("owner", "clinic", "veterinarian")}),
-            duration=self.duration, tokenUsage=self.tokenUsage, usedFallback=self.usedFallback,
-        ).model_dump(exclude_none=True)
-
-
-# ---------- slim client payload (final_json_format.txt) ----------
-class OutputVaccination(BaseModel):
-    partialMatch: bool = False
-    matchedComponents: list[str] = Field(default_factory=list)  # requested names, only for a partial match
-    name: str
-    dateAdministered: Optional[str] = None
-    expirationDate: Optional[str] = None
-    needsHumanReview: bool = False
-
-
-def _printed_rows(events: list[VaccinationEvent]) -> list[OutputVaccination]:
-    """Events are (printed row x requested name); fold them back to one entry per printed row.
-    A combination row whose components expire at different dates gets the earliest one as its expiry.
-    partialMatch: every requested name the row matched, it covers only partly; matchedComponents lists those names."""
-    rows: dict = {}
-    for e in events:  # undated-given (reminder) rows stay apart by due date
-        rows.setdefault((e.rawName, e.dateAdministered, None if e.dateAdministered else e.dueDate), []).append(e)
-    out = []
-    for (name, given, _), es in rows.items():
-        due = min((e.dueDate for e in es if e.dueDate), default=None)
-        matched = [e for e in es if e.target]
-        partial = bool(matched) and all(e.partial for e in matched)
-        out.append(OutputVaccination(partialMatch=partial,
-                                     matchedComponents=list(dict.fromkeys(e.target for e in matched)) if partial else [],
-                                     name=name, dateAdministered=given, expirationDate=due,
-                                     needsHumanReview=any(e.needsHumanReview for e in es)))
-    given = sorted((v for v in out if v.dateAdministered), key=lambda v: v.dateAdministered, reverse=True)
-    reminders = sorted((v for v in out if not v.dateAdministered), key=lambda v: v.expirationDate or "9999")
-    return given + reminders  # doses newest first, then reminder-only rows soonest first
-
-
-def _party(p: Optional[Party]) -> Optional[OutputParty]:
-    out = OutputParty(**p.model_dump()) if p else None
-    return out if out and out.model_dump(exclude_none=True) else None  # nothing printed -> omit, not {}
+        """The client payload (final_json_format.txt): one vaccination per requested name with its latest dose,
+        matchedComponents = the printed rows behind it (names and dates only as printed on the document),
+        owner/clinic/veterinarian, duration and tokenUsage. Flags appear only when true, empty party fields are left out."""
+        out = {"pets": [{**{k: getattr(p, k) for k in _PET_FIELDS if getattr(p, k)},
+                         "vaccinations": [_vaccination(v, p.printedRows) for v in p.vaccinations]
+                                         or _unrequested(p.printedRows)}
+                        for p in self.data.pets]}
+        for k in ("owner", "clinic", "veterinarian"):
+            party = getattr(self.data, k)
+            fields = {f: v for f, v in party.model_dump().items() if v and f in _PARTY_FIELDS} if party else {}
+            if fields:
+                out[k] = fields
+        return {**out, "duration": self.duration, "tokenUsage": self.tokenUsage.model_dump()}
 
 
 _PET_FIELDS = ("name", "species", "breed", "sex", "weight", "color", "microchipNumber")
+_PARTY_FIELDS = ("name", "address", "phone", "email", "website", "licenseNumber")
 
 
-class OutputPet(BaseModel):
-    name: Optional[str] = None
-    species: Optional[str] = None
-    breed: Optional[str] = None
-    sex: Optional[str] = None
-    weight: Optional[str] = None
-    color: Optional[str] = None
-    microchipNumber: Optional[str] = None
-    vaccinations: list[OutputVaccination] = Field(default_factory=list)
+def _component(e: VaccinationEvent) -> dict:
+    due = e.dueDate if e.dueDateSource == "document" else None  # never a date worked out from '3 Yr'
+    return {"name": e.rawName, **({"dateAdministered": e.dateAdministered} if e.dateAdministered else {}),
+            **({"expirationDate": due} if due else {})}
 
 
-class OutputParty(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    name: Optional[str] = None
-    address: Optional[str] = None
-    phone: Optional[str] = None
-    email: Optional[str] = None
-    website: Optional[str] = None
-    licenseNumber: Optional[str] = None
+def _newest_first(comps) -> list[dict]:
+    return sorted(comps, key=lambda c: (c.get("dateAdministered") or "", c.get("expirationDate") or ""), reverse=True)
 
 
-class OutputData(BaseModel):
-    pets: list[OutputPet] = Field(default_factory=list)
-    owner: Optional[OutputParty] = None
-    clinic: Optional[OutputParty] = None
-    veterinarian: Optional[OutputParty] = None
+def _unrequested(printed: list[VaccinationEvent]) -> list[dict]:
+    """No vaccine names requested: one entry per printed vaccine name (as printed), in the same shape - the latest
+    dose's dates on top, every printed row of that name in matchedComponents."""
+    groups: dict = {}
+    for e in printed:
+        groups.setdefault(e.rawName.lower(), []).append(e)
+    out = []
+    for rows in groups.values():
+        dosed = [e for e in rows if e.dateAdministered]
+        head = max(dosed, key=lambda e: e.dateAdministered) if dosed else max(rows, key=lambda e: e.dueDate or "")
+        entry = {"name": head.rawName, "dateAdministered": head.dateAdministered, "expirationDate": head.dueDate}
+        if head.needsHumanReview:
+            entry["needsHumanReview"] = True
+        comps = {(e.rawName, e.dateAdministered, e.dueDate if e.dueDateSource == "document" else None): _component(e)
+                 for e in rows}
+        out.append({**entry, "matchedComponents": _newest_first(comps.values())})
+    return sorted(out, key=lambda v: v["dateAdministered"] or "", reverse=True)
 
 
-class OutputResult(BaseModel):
-    data: OutputData
-    duration: float = 0.0
-    tokenUsage: TokenUsage = Field(default_factory=TokenUsage)
-    usedFallback: bool = False
+def _vaccination(v: Vaccination, printed: list[VaccinationEvent]) -> dict:
+    """A requested name: the dates of its latest dose (expiry may be calculated), then every printed row matched to
+    it, newest first, each with only the dates the document prints. Not found -> null dates, no components."""
+    out = {"name": v.name, "dateAdministered": v.dateAdministered if v.matchedComponents else None,
+           "expirationDate": v.expirationDate if v.matchedComponents else None}
+    if v.partialMatch:
+        out["partialMatch"] = True
+    if v.needsHumanReview and v.matchedComponents:
+        out["needsHumanReview"] = True
+    comps = {(e.rawName, e.dateAdministered, e.dueDate if e.dueDateSource == "document" else None): _component(e)
+             for e in printed if e.target == v.name}
+    out["matchedComponents"] = _newest_first(comps.values())
+    return out

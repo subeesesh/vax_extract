@@ -61,14 +61,18 @@ def rows_for(result: Result, document: str, verified_by: str, created: datetime)
 
 
 def _printed_rows_for(result: Result, base: dict) -> list[dict]:
-    rows = []
-    for p in result.to_output()["data"]["pets"]:
-        for v in p["vaccinations"]:
-            ok = not v["needsHumanReview"]
-            rows.append({**base, "PetName": p.get("name"), "Immunization_Type_Name": v["name"],
-                         "Expiration_date": datetime.fromisoformat(v["expirationDate"]) if v.get("expirationDate") else None,
+    rows, seen = [], set()
+    for p in result.data.pets:
+        for e in p.printedRows:
+            key = (p.name, e.rawName, e.dateAdministered, e.dueDate)
+            if key in seen:
+                continue
+            seen.add(key)
+            ok = not e.needsHumanReview
+            rows.append({**base, "PetName": p.name, "Immunization_Type_Name": e.rawName,
+                         "Expiration_date": datetime.fromisoformat(e.dueDate) if e.dueDate else None,
                          "status": "Extracted" if ok else "Needs review", "is_verified_by_ai": ok,
-                         "Results - Comment": f"given {v.get('dateAdministered') or 'n/a'}"})
+                         "Results - Comment": f"given {e.dateAdministered or 'n/a'}"})
     return rows
 
 

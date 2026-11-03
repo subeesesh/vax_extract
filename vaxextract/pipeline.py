@@ -105,6 +105,7 @@ def extract_bytes(data: bytes, cfg: Config, today: Optional[date] = None,
     result.duration = round(time.time() - t0, 3)
     result.meta.ocrSeconds = round(t_ocr, 3)
     result.meta.llmSeconds = round(result.duration - t_ocr, 3)
+    result.meta.layoutText, result.meta.sources = text, [p.source for p in doc.pages]
     result.tokenUsage = usage
     return result
 

@@ -5,7 +5,7 @@ As of 27 October 2026. Companion pages: [pipeline.html](pipeline.html) (architec
 
 ## Overview
 
-vaxextract turns any veterinary vaccination document (a PDF, photo or screenshot) into vaccination events as JSON. It is a lower-cost replacement for the current Document AI call, and its output matches the existing Document AI payload (`data.pets[].vaccinations`, `owner`, `clinic`, `veterinarian`, `duration`, `tokenUsage`, `usedFallback`).
+vaxextract turns any veterinary vaccination document (a PDF, photo or screenshot) into vaccination events as JSON. It is a lower-cost replacement for the current Document AI call, and its output gives one entry per requested vaccine per pet with the printed rows behind it (`pets[].vaccinations`, `owner`, `clinic`, `veterinarian`, `duration`, `tokenUsage`).
 
 - **How it keeps cost down:** PDF text layers are read for free. Images go through local OCR (RapidOCR). One small text LLM (Gemini Flash-Lite) does the reading. Everything that has to be correct is handled by deterministic Python.
 - **No hardcoded vaccine names:** each request sends the kennel's own vaccine names (e.g. `Bordetella`, `DHLPP / FVRCP`, `Parvo`, `Rabies`). The LLM matches each printed row to those names.
@@ -119,40 +119,73 @@ Any document-level reason sets `needsHumanReview`. When a fallback model is conf
 
 ## Output format
 
-The default output is the client payload, which uses the Document AI shape. Adding `full=true` to the API call or `--full` to the CLI returns the full result instead, which evaluation needs.
+The default output is the client payload. Adding `full=true` to the API call or `--full` to the CLI returns the full result instead, which evaluation needs.
 
 ### Client payload (default)
 
 ```json
 {
-  "data": {
-    "pets": [{
-      "name": "Buddy", "species": "Canine", "breed": "Labrador Retriever",
-      "sex": "Male (Neutered)", "weight": "64.2 lbs", "color": "Black",
-      "microchipNumber": "985112000000000",
-      "vaccinations": [{
-        "partialMatch": true,
-        "matchedComponents": ["DHLPP / FVRCP"],
-        "name": "DAPP Annual Vaccine",
-        "dateAdministered": "2026-10-20",
-        "expirationDate": "2027-10-20",
-        "needsHumanReview": false
-      }]
-    }],
-    "owner": {"name": "Jane Doe", "phone": "555-010-0000"},
-    "clinic": {"name": "Example Animal Hospital", "website": "www.example.vet"},
-    "veterinarian": {"name": "Dr. A. Smith, DVM", "licenseNumber": "TX 12345"}
-  },
+  "pets": [
+    {
+      "name": "Toad",
+      "species": "Canine",
+      "breed": "Lab mix",
+      "sex": "MN",
+      "weight": "65.6lbs.",
+      "microchipNumber": "033337",
+      "vaccinations": [
+        {
+          "name": "Bordetella",
+          "dateAdministered": "2026-10-22",
+          "expirationDate": "2027-10-22",
+          "matchedComponents": [
+            {"name": "*Bordetella Vaccine", "dateAdministered": "2026-10-22", "expirationDate": "2027-10-22"}
+          ]
+        },
+        {
+          "name": "DHLPP / FVRCP",
+          "dateAdministered": "2025-10-24",
+          "expirationDate": "2026-10-24",
+          "partialMatch": true,
+          "needsHumanReview": true,
+          "matchedComponents": [
+            {"name": "*Distemper/Parvo Vaccine", "dateAdministered": "2025-10-24", "expirationDate": "2026-10-24"}
+          ]
+        },
+        {
+          "name": "Rabies",
+          "dateAdministered": "2025-10-24",
+          "expirationDate": "2028-10-24",
+          "matchedComponents": [
+            {"name": "*Rabies Vaccine 3 Year", "dateAdministered": "2025-10-24"},
+            {"name": "*Rabies Vaccine", "dateAdministered": "2024-10-20", "expirationDate": "2025-10-20"}
+          ]
+        },
+        {
+          "name": "Canine Influenza",
+          "dateAdministered": null,
+          "expirationDate": null,
+          "matchedComponents": []
+        }
+      ]
+    }
+  ],
+  "owner": {"name": "Claire Schmotzer", "address": "1291 Elizabeth Ave Unit 1
+Las Vegas, NV 89119"},
+  "clinic": {"name": "Aloha Animal Hospital", "address": "7341 South Torrey Pines Drive
+Las Vegas, NV 89139",
+             "phone": "(702) 567-5222"},
+  "veterinarian": {"name": "Dr. Anne Beckes"},
   "duration": 6.2,
-  "tokenUsage": {"inputTokens": 2100, "outputTokens": 640, "totalTokens": 2740},
-  "usedFallback": false
+  "tokenUsage": {"inputTokens": 2100, "outputTokens": 640, "totalTokens": 2740}
 }
 ```
 
 - **One pet entry per pet.** Multi-pet invoices produce several.
-- **`vaccinations[]` has one entry per printed row,** with `name` exactly as printed. Given doses come first, newest first, followed by reminder-only rows, soonest due first. A reminder joins a dose printed under the same name. Different products are never merged.
-- **`partialMatch` / `matchedComponents`** list the requested names that a row covers only partly (e.g. `DAPP` for `DHLPP / FVRCP`).
-- **Fields that were not found are omitted.** There is no confidence score. The full example is in `final_json_format.txt`.
+- **`vaccinations[]` has one entry per requested vaccine name,** in request order. `name` is the requested name; `dateAdministered` / `expirationDate` are those of the latest dose, and the expiry may be worked out from a printed interval. A combination expires with its first-expiring part. Printed vaccines nobody asked for are left out.
+- **`matchedComponents[]`** lists every printed row matched to that name, newest first, with the name and dates exactly as on the document. A date that is not printed is left out, never calculated.
+- **Requested but not found:** `dateAdministered` and `expirationDate` are `null`, `matchedComponents` is `[]`.
+- **`partialMatch` / `needsHumanReview`** appear only when true. Empty pet and party fields are left out. There is no confidence score.
 
 ### Full result (`--full`), per pet
 

@@ -1,8 +1,8 @@
 # vaxextract
 
 Cost-efficient replacement for the Document AI call: **any vet vaccination document -> vaccination events (JSON)**.
-Output mirrors the existing Document AI payload (`data.pets[].vaccinations`, `owner`, `clinic`, `veterinarian`,
-`duration`, `tokenUsage`, `usedFallback`); see `final_json_format.txt` for an example.
+Output: one entry per requested vaccine per pet, with the printed rows behind it, plus `owner`, `clinic`,
+`veterinarian`, `duration` and `tokenUsage`; see `final_json_format.txt` for an example.
 
 ## Flow
 ```
@@ -50,19 +50,20 @@ Applied deterministically in `postprocess.py` / `dates.py` (no vaccine name tabl
 ## Output
 API and CLI return the client payload by default (example in `final_json_format.txt`):
 ```
-data.pets[{name, species, breed, sex, weight, color, microchipNumber,
-           vaccinations[{partialMatch, matchedComponents, name, dateAdministered, expirationDate, needsHumanReview}]}]
-data.owner / data.clinic / data.veterinarian  {name, address, phone, email, website, licenseNumber}
-duration, tokenUsage{inputTokens, outputTokens, totalTokens}, usedFallback
+pets[{name, species, breed, sex, weight, color, microchipNumber,
+      vaccinations[{name, dateAdministered, expirationDate, partialMatch?, needsHumanReview?,
+                    matchedComponents[{name, dateAdministered?, expirationDate?}]}]}]
+owner / clinic / veterinarian  {name, address, phone, email, website, licenseNumber}
+duration, tokenUsage{inputTokens, outputTokens, totalTokens}
 ```
 - `pets[].name` is the pet; a multi-pet document gives several pets, each with its own `vaccinations`.
-- `vaccinations[]` has **one entry per printed vaccine row**, `name` exactly as printed, history included: given doses
-  newest first, then reminder-only rows (no `dateAdministered`) soonest due first. A reminder row joins a dose printed
-  under the same name (invoice line + reminder table); different products are never merged.
-- `partialMatch` / `matchedComponents`: the requested names the row covers only partly (e.g. `DAPP` for
-  `DHLPP / FVRCP`); `[]` otherwise.
-- A combination row whose components expire at different dates gets the earliest expiry.
-- Anything not found is omitted (no `expirationDate`, no `veterinarian`, ...). There is no confidence score.
+- `vaccinations[]` has **one entry per requested vaccine name**, in request order; `name` is the requested name and the
+  dates are those of its latest dose (the expiry may be worked out from a printed interval). A combination expires with
+  its first-expiring part. Printed vaccines nobody asked for are left out.
+- `matchedComponents[]`: every printed row matched to that name, newest first, with the name and dates **exactly as on
+  the document**; a date that is not printed is left out, never calculated.
+- Requested but not on the document: `dateAdministered` / `expirationDate` are `null`, `matchedComponents` is `[]`.
+- `partialMatch` / `needsHumanReview` appear only when true. Empty pet/party fields are left out. No confidence score.
 
 `POST /api/extract` with `full=true` (the web UI does this) or `cli extract --full` returns the full result below;
 **eval needs `--full` predictions**.

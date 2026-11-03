@@ -4,7 +4,7 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 
 from vaxextract import server
-from vaxextract.schema import Data, Party, Pet, Result, VaccinationEvent
+from vaxextract.schema import Data, MatchedComponent, Party, Pet, Result, Vaccination, VaccinationEvent
 
 
 def test_index_and_targets(monkeypatch):
@@ -19,7 +19,9 @@ def test_extract_passes_selected_names(monkeypatch):
 
     def fake(data, cfg, targets=None):
         seen["data"], seen["targets"] = data, targets
-        return Result(data=Data(pets=[Pet(name="Luna", printedRows=[VaccinationEvent(rawName="RABIES 3YR", target="Rabies")])]))
+        return Result(data=Data(pets=[Pet(name="Luna", printedRows=[VaccinationEvent(rawName="RABIES 3YR", target="Rabies")],
+                                          vaccinations=[Vaccination(name="Rabies", matchedComponents=[
+                                              MatchedComponent(extractedName="RABIES 3YR")])])]))
 
     monkeypatch.setattr(server, "extract_bytes", fake)
     monkeypatch.setattr(server.Config, "from_env", classmethod(lambda cls: None))
@@ -27,7 +29,8 @@ def test_extract_passes_selected_names(monkeypatch):
     r = c.post("/api/extract", files={"file": ("a.pdf", b"%PDF")}, data={"targets": "Rabies;DHLPP / FVRCP; "})
     assert r.status_code == 200
     assert seen == {"data": b"%PDF", "targets": ["Rabies", "DHLPP / FVRCP"]}
-    assert [v["name"] for v in r.json()["data"]["pets"][0]["vaccinations"]] == ["RABIES 3YR"]
+    assert r.json()["pets"][0]["vaccinations"] == [{"name": "Rabies", "dateAdministered": None, "expirationDate": None,
+                                                    "matchedComponents": [{"name": "RABIES 3YR"}]}]
 
 
 def test_extract_without_vaccines_is_extraction_only(monkeypatch):
@@ -42,32 +45,39 @@ def test_extract_without_vaccines_is_extraction_only(monkeypatch):
     monkeypatch.delenv("VAX_SHEET", raising=False)
     r = TestClient(server.app).post("/api/extract", files={"file": ("a.pdf", b"%PDF")}, data={"targets": " ; "})
     assert r.status_code == 200 and seen["targets"] == []
-    assert r.json()["data"]["pets"][0]["vaccinations"][0]["matchedComponents"] == []
+    assert r.json()["pets"][0]["vaccinations"] == [  # nothing requested: the printed vaccines, as printed
+        {"name": "RABIES 3YR", "dateAdministered": None, "expirationDate": None, "matchedComponents": [{"name": "RABIES 3YR"}]}]
 
 
 def test_extract_slim_and_full(monkeypatch):
     def fake(data, cfg, targets=None):
-        dhpp = dict(rawName="DHPP-L", dateAdministered="2026-02-28", dueDate="2027-02-28")
+        dhpp = dict(rawName="DHPP-L", dateAdministered="2026-02-28")
+        comp = [MatchedComponent(extractedName="DHPP-L")]
         return Result(duration=4.2, data=Data(clinic=Party(name="Comal Pet Hospital", email="staff@comalvet.com",
-                                                           website="comalvet.com"), pets=[Pet(name="Luna", species="dog", printedRows=[
-            VaccinationEvent(**dhpp, target="DHLPP / FVRCP", partial=True),
-            VaccinationEvent(**{**dhpp, "dueDate": "2029-02-28"}, target="Lepto", partial=True),  # same row, longer interval
-            VaccinationEvent(rawName="Rabies 1 Year", dateAdministered="2022-05-03", target="Rabies", needsHumanReview=True),
-            VaccinationEvent(rawName="Giardia", dateAdministered="2025-01-01")])]))
+                                                           website="comalvet.com"), pets=[Pet(
+            name="Luna", species="dog",
+            vaccinations=[Vaccination(name="DHLPP / FVRCP", partialMatch=True, matchedComponents=comp,
+                                      dateAdministered="2026-02-28", expirationDate="2027-02-28"),
+                          Vaccination(name="Rabies", needsHumanReview=True, reviewReasons=["no dates"]),
+                          Vaccination(name="Lepto", matchedComponents=comp, dateAdministered="2026-02-28",
+                                      expirationDate="2029-02-28")],
+            printedRows=[
+                VaccinationEvent(**dhpp, dueDate="2027-02-28", dueDateSource="document", target="DHLPP / FVRCP", partial=True),
+                VaccinationEvent(**dhpp, dueDate="2029-02-28", dueDateSource="derived", target="Lepto"),
+                VaccinationEvent(rawName="Giardia", dateAdministered="2025-01-01")])]))
 
     monkeypatch.setattr(server, "extract_bytes", fake)
     monkeypatch.setattr(server.Config, "from_env", classmethod(lambda cls: None))
     c = TestClient(server.app)
     r = slim = c.post("/api/extract", files={"file": ("a.pdf", b"%PDF")}, data={"targets": "DHLPP / FVRCP;Rabies;Lepto"})
-    assert r.json() == {"data": {"pets": [{"name": "Luna", "species": "dog", "vaccinations": [
-        {"partialMatch": True, "matchedComponents": ["DHLPP / FVRCP", "Lepto"], "name": "DHPP-L",
-         "dateAdministered": "2026-02-28", "expirationDate": "2027-02-28", "needsHumanReview": False},
-        {"partialMatch": False, "matchedComponents": [], "name": "Giardia", "dateAdministered": "2025-01-01",
-         "needsHumanReview": False},
-        {"partialMatch": False, "matchedComponents": [], "name": "Rabies 1 Year", "dateAdministered": "2022-05-03",
-         "needsHumanReview": True}]}],
-        "clinic": {"name": "Comal Pet Hospital", "email": "staff@comalvet.com", "website": "comalvet.com"}},
-        "duration": 4.2, "tokenUsage": {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0}, "usedFallback": False}
+    assert r.json() == {"pets": [{"name": "Luna", "species": "dog", "vaccinations": [
+        {"name": "DHLPP / FVRCP", "dateAdministered": "2026-02-28", "expirationDate": "2027-02-28", "partialMatch": True,
+         "matchedComponents": [{"name": "DHPP-L", "dateAdministered": "2026-02-28", "expirationDate": "2027-02-28"}]},
+        {"name": "Rabies", "dateAdministered": None, "expirationDate": None, "matchedComponents": []},  # not found
+        {"name": "Lepto", "dateAdministered": "2026-02-28", "expirationDate": "2029-02-28",
+         "matchedComponents": [{"name": "DHPP-L", "dateAdministered": "2026-02-28"}]}]}],  # derived expiry not in component
+        "clinic": {"name": "Comal Pet Hospital", "email": "staff@comalvet.com", "website": "comalvet.com"},
+        "duration": 4.2, "tokenUsage": {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0}}
     r = c.post("/api/extract", files={"file": ("a.pdf", b"%PDF")}, data={"targets": "Rabies", "full": "true"})
     assert {"meta", "tokenUsage"} <= r.json().keys() and r.json()["data"]["pets"][0]["species"] == "dog"
     assert r.json()["output"] == slim.json()  # the final JSON rides along for the UI

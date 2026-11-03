@@ -261,22 +261,33 @@ def test_undated_rows_not_merged():
 def _slim(raw_events, targets):
     raw = RawExtraction.model_validate({"pets": [{"name": "X", "events": raw_events}]})
     data, _ = build_data(raw, "", TODAY, targets)
-    return Result(data=data).to_output()["data"]["pets"][0]["vaccinations"]
+    return Result(data=data).to_output()["pets"][0]["vaccinations"]
 
 
-def test_slim_output_lists_every_printed_row():
-    targets = ["DHLPP / FVRCP", "Rabies"]
+def test_output_one_entry_per_requested_name():
+    targets = ["DHLPP / FVRCP", "Rabies", "Bordetella"]
     rows = _slim([ev("DA2P", "9/22/2026", "8/10/2027", m=[{"name": "DHLPP / FVRCP", "partial": True}]),
                   ev("PARVO", "9/22/2026", "8/10/2027", m=[{"name": "DHLPP / FVRCP", "partial": True}]),
-                  ev("RABIES", "9/22/2026", "8/10/2029", m=["Rabies"])], targets)
-    assert [(r["name"], r["expirationDate"]) for r in rows] == [
-        ("DA2P", "2027-08-10"), ("PARVO", "2027-08-10"), ("RABIES", "2029-08-10")]
+                  ev("RABIES 3 YR", "9/22/2026", dur=36, m=["Rabies"]),
+                  ev("RABIES 1 YR", "9/01/2025", "9/01/2026", m=["Rabies"]),
+                  ev("Giardia", "9/22/2026", "9/22/2027")], targets)  # not requested -> not in the output
+    assert rows == [
+        {"name": "DHLPP / FVRCP", "dateAdministered": "2026-09-22", "expirationDate": "2027-08-10", "partialMatch": True,
+         "matchedComponents": [{"name": "DA2P", "dateAdministered": "2026-09-22", "expirationDate": "2027-08-10"},
+                               {"name": "PARVO", "dateAdministered": "2026-09-22", "expirationDate": "2027-08-10"}]},
+        # latest dose on top (expiry worked out from '3 YR'); components keep only printed dates, older dose too
+        {"name": "Rabies", "dateAdministered": "2026-09-22", "expirationDate": "2029-09-22",
+         "matchedComponents": [{"name": "RABIES 3 YR", "dateAdministered": "2026-09-22"},
+                               {"name": "RABIES 1 YR", "dateAdministered": "2025-09-01", "expirationDate": "2026-09-01"}]},
+        {"name": "Bordetella", "dateAdministered": None, "expirationDate": None, "matchedComponents": []}]
 
 
 def test_combination_row_gets_earliest_component_expiry():
     rows = _slim([ev("DHPP-L", "2026-02-01", m=[("DHLPP / FVRCP", 36), ("Leptospirosis", 12)])],
                  ["DHLPP / FVRCP", "Leptospirosis"])
-    assert [(r["name"], r["expirationDate"]) for r in rows] == [("DHPP-L", "2027-02-01")]
+    assert [(r["name"], r["expirationDate"]) for r in rows] == [("DHLPP / FVRCP", "2029-02-01"),
+                                                               ("Leptospirosis", "2027-02-01")]
+    assert rows[0]["matchedComponents"] == [{"name": "DHPP-L", "dateAdministered": "2026-02-01"}]  # nothing printed
 
 
 def test_reminder_of_other_product_not_joined():
@@ -288,16 +299,18 @@ def test_reminder_of_other_product_not_joined():
               m=[{"name": "DHLPP / FVRCP", "partial": True}, "Leptospirosis"])]
     pet, _ = run(raw, targets)
     assert (pet.vaccinations[0].expirationDate, pet.vaccinations[0].needsHumanReview) == ("2026-12-10", False)
-    assert [(r["name"], r.get("expirationDate")) for r in _slim(raw, targets)] == [
-        ("DHPPV K9 Distemper Vaccine: 3 Year", "2029-09-18"), ("Lepto Vaccine, 1 Year", "2026-12-10")]
+    dhlpp = _slim(raw, targets)[0]
+    assert dhlpp["expirationDate"] == "2026-12-10" and dhlpp["matchedComponents"] == [
+        {"name": "DHPPV K9 Distemper Vaccine: 3 Year", "dateAdministered": "2026-09-18"},
+        {"name": "Lepto Vaccine, 1 Year", "expirationDate": "2026-12-10"}]
 
 
 def test_reminder_row_joins_dose_with_same_printed_name():
     # Harley: invoice line + reminder-table row for the same product
     rows = _slim([ev("Bordetella Oral Vaccine", "08/26/26", m=["Bordetella"]),
                   ev("Bordetella Oral Vaccine", None, "2/24/2027", m=["Bordetella"])], ["Bordetella"])
-    assert [(r["name"], r["dateAdministered"], r["expirationDate"]) for r in rows] == [
-        ("Bordetella Oral Vaccine", "2026-08-26", "2027-02-24")]
+    assert rows[0]["matchedComponents"] == [
+        {"name": "Bordetella Oral Vaccine", "dateAdministered": "2026-08-26", "expirationDate": "2027-02-24"}]
 
 
 def test_rollup_takes_earliest_expiry_of_same_day_rows():
@@ -366,3 +379,16 @@ def test_eval_ignores_rows_matching_no_requested_name(tmp_path):
     pred = {"data": {"pets": [{"name": "Rex", "events": [ev, {"target": None, "dateAdministered": "2026-01-02"}]}]}}
     (tmp_path / "p" / "d.json").write_text(json.dumps(pred))
     assert evaluate(str(tmp_path / "p"), str(tmp_path / "g"))["event_strict_prf"] == (1.0, 1.0, 1.0)
+
+
+def test_nothing_requested_lists_printed_vaccines():
+    rows = _slim([ev("Rabies 3 Yr", "05/01/2026", dur=36), ev("Rabies 1 Yr", "04/20/2025", "04/20/2026"),
+                  ev("DA2PP", "05/01/2026", "05/01/2027"), ev("DA2PP", "04/20/2025", "04/20/2026")], [])
+    assert rows == [
+        {"name": "Rabies 3 Yr", "dateAdministered": "2026-05-01", "expirationDate": "2029-05-01",
+         "matchedComponents": [{"name": "Rabies 3 Yr", "dateAdministered": "2026-05-01"}]},
+        {"name": "DA2PP", "dateAdministered": "2026-05-01", "expirationDate": "2027-05-01",
+         "matchedComponents": [{"name": "DA2PP", "dateAdministered": "2026-05-01", "expirationDate": "2027-05-01"},
+                               {"name": "DA2PP", "dateAdministered": "2025-04-20", "expirationDate": "2026-04-20"}]},
+        {"name": "Rabies 1 Yr", "dateAdministered": "2025-04-20", "expirationDate": "2026-04-20",
+         "matchedComponents": [{"name": "Rabies 1 Yr", "dateAdministered": "2025-04-20", "expirationDate": "2026-04-20"}]}]
