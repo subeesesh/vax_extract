@@ -392,3 +392,49 @@ def test_nothing_requested_lists_printed_vaccines():
                                {"name": "DA2PP", "dateAdministered": "2025-04-20", "expirationDate": "2026-04-20"}]},
         {"name": "Rabies 1 Yr", "dateAdministered": "2025-04-20", "expirationDate": "2026-04-20",
          "matchedComponents": [{"name": "Rabies 1 Yr", "dateAdministered": "2025-04-20", "expirationDate": "2026-04-20"}]}]
+
+
+def test_combination_printing_two_intervals_expires_with_the_shorter():
+    # Rosie: 'DA2P-Pv 3yr 4L 1yr' - the model says 36 months, but the Lepto part runs out after one year
+    rows = _slim([ev("DA2P-Pv 3yr 4L 1yr Vaccine", "1/21/2026", dur=36),
+                  ev("Rabies Vaccine 3yr Canine", "1/21/2026", dur=36)], [])
+    assert {r["name"]: r["expirationDate"] for r in rows} == {
+        "DA2P-Pv 3yr 4L 1yr Vaccine": "2027-01-21", "Rabies Vaccine 3yr Canine": "2029-01-21"}
+
+
+def test_owner_contact_copied_from_clinic_is_dropped():
+    # Leo: the model gave the owner the clinic's phone and email
+    raw = RawExtraction.model_validate({"pets": [{"name": "Leo", "events": []}],
+        "owner": {"name": "Travis Ryan", "address": "94 Wayside Lane St Thomas", "phone": "(519) 631-0430",
+                  "email": "info@elginanimalhospital.com"},
+        "clinic": {"name": "Elgin Animal Hospital", "address": "9789 Sunset Road St. Thomas", "phone": "519-631-0430",
+                   "email": "Info@ElginAnimalHospital.com"}})
+    data, _ = build_data(raw, "", TODAY, [])
+    assert data.owner.model_dump(exclude_none=True) == {"name": "Travis Ryan", "address": "94 Wayside Lane St Thomas"}
+    assert data.clinic.phone == "519-631-0430"
+
+
+def test_pet_listed_again_with_owner_surname_is_merged():
+    # Mila/Ollie: invoice lines say 'Ollie', reminder headings say 'Ollie McAuliffe' and 'Mila McAuliffe'
+    raw = RawExtraction.model_validate({"pets": [
+        {"name": "Ollie", "events": [ev("Lyme Vaccine", None, "1/6/2027")]},
+        {"name": "Mila McAuliffe", "species": "Canine", "events": [ev("Bordetella Vaccine", None, "11/14/2026")]},
+        {"name": "Ollie McAuliffe", "species": "Canine", "events": [ev("DA2PP 3 Yr", None, "1/6/2029")]}]})
+    data, _ = build_data(raw, "", TODAY, [])
+    assert [(p.name, p.species, sorted(e.rawName for e in p.printedRows)) for p in data.pets] == [
+        ("Ollie", "Canine", ["DA2PP 3 Yr", "Lyme Vaccine"]), ("Mila", "Canine", ["Bordetella Vaccine"])]
+
+
+def test_different_pets_sharing_a_first_word_are_kept_apart():
+    raw = RawExtraction.model_validate({"pets": [{"name": "Max", "events": []}, {"name": "Max 2", "events": []},
+                                                 {"name": "Bella", "events": []}]})
+    data, _ = build_data(raw, "", TODAY, [])
+    assert [p.name for p in data.pets] == ["Max", "Max 2", "Bella"]
+
+
+def test_interval_printed_in_name_used_when_model_leaves_it_out():
+    # Indiana: no expiry printed anywhere; the model sometimes returns no duration for 'DAPP 3 year'
+    rows = _slim([ev("DAPP 3 year", "06/18/2025"), ev("Bordetella", "06/18/2025")], [])
+    assert {r["name"]: r["expirationDate"] for r in rows} == {"DAPP 3 year": "2028-06-18", "Bordetella": None}
+    pet, _ = run([ev("Canine Rabies 3 Year", "05/05/2022", m=["Rabies"])], ["Rabies"])
+    assert pet.vaccinations[0].expirationDate == "2025-05-05"

@@ -24,9 +24,28 @@ class Document:
     kind: str  # "pdf" | "image"
 
 
-def _ocr_rgb(rgb: np.ndarray, get_ocr: Callable):
+def _ocr_once(rgb: np.ndarray, get_ocr: Callable) -> list[Token]:
     gray = preprocess(rgb)
     return get_ocr().run(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR))
+
+
+def _sideways(tokens: list[Token]) -> bool:
+    """A page photographed turned 90 degrees: the detector boxes its text lines as tall, narrow strips."""
+    words = [t for t in tokens if len(t.text.strip()) >= 4]
+    tall = sum((t.y1 - t.y0) > 1.5 * (t.x1 - t.x0) for t in words)
+    return len(words) >= 5 and tall >= 0.5 * len(words)
+
+
+def _read_quality(tokens: list[Token]) -> float:
+    return sum(t.conf * len(t.text.strip()) for t in tokens)
+
+
+def _ocr_rgb(rgb: np.ndarray, get_ocr: Callable) -> list[Token]:
+    tokens = _ocr_once(rgb, get_ocr)
+    if _sideways(tokens):  # read it turned both ways; keep the reading the recognizer is surest of
+        turned = [_ocr_once(np.ascontiguousarray(np.rot90(rgb, k)), get_ocr) for k in (1, 3)]
+        tokens = max([tokens, *turned], key=_read_quality)
+    return tokens
 
 
 def _pix_to_rgb(pix) -> np.ndarray:

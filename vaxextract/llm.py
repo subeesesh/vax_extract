@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import re
 import threading
@@ -16,6 +17,8 @@ import httpx
 
 from .prompt import EXPAND_PROMPT, SYSTEM_PROMPT, user_prompt
 from .schema import RawExtraction
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -68,9 +71,13 @@ def _send(url: str, payload: dict, headers: dict, cfg: LlmConfig) -> httpx.Respo
     so after `hedge_after` seconds an identical request is raced against it and the first response is used."""
     if cfg.hedge_after <= 0:
         return httpx.post(url, json=payload, headers=headers, timeout=cfg.timeout)
-    futs = {_POOL.submit(httpx.post, url, json=payload, headers=headers, timeout=cfg.timeout)}
+    t0 = time.time()
+    first = _POOL.submit(httpx.post, url, json=payload, headers=headers, timeout=cfg.timeout)
+    futs = {first}
     done, _ = wait(futs, timeout=cfg.hedge_after)
-    if not done:
+    hedged = not done
+    if hedged:
+        log.warning("LLM %s: no answer after %g s, sending a duplicate request", cfg.model, cfg.hedge_after)
         futs.add(_POOL.submit(httpx.post, url, json=payload, headers=headers, timeout=cfg.timeout))
     pending, err = futs, None
     while pending:
@@ -82,6 +89,9 @@ def _send(url: str, payload: dict, headers: dict, cfg: LlmConfig) -> httpx.Respo
                 err = e
                 continue
             if r.status_code == 200 or not pending:
+                if hedged:
+                    log.warning("LLM %s: %s request answered first after %.1f s (HTTP %s)", cfg.model,
+                                "original" if f is first else "duplicate", time.time() - t0, r.status_code)
                 return r
     raise err
 

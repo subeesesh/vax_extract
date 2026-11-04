@@ -122,7 +122,7 @@ def test_extraction_survives_failed_expansion(monkeypatch):
     assert raw.pets[0].name == "Luna"
 
 
-def test_hedged_request_uses_first_answer(monkeypatch):
+def test_hedged_request_uses_first_answer(monkeypatch, caplog):
     import threading
     import time
 
@@ -143,6 +143,9 @@ def test_hedged_request_uses_first_answer(monkeypatch):
     out, _ = llm_mod._post(LlmConfig("http://x", "k", "m", hedge_after=0.05), [{"role": "user", "content": "hi"}])
     release.set()
     assert out == "answer 1" and len(calls) == 2 and time.time() - t < 2
+    msgs = [r.getMessage() for r in caplog.records if r.name == "vaxextract.llm"]
+    assert any("sending a duplicate request" in m for m in msgs)
+    assert any("duplicate request answered first" in m for m in msgs)
 
 
 def test_expansion_cached_on_disk(monkeypatch, tmp_path):
@@ -250,3 +253,31 @@ def test_invisible_scanner_text_layer_is_ocred():
 def test_letter_shifted_text_layer_is_ocred():
     shifted = "".join(chr(ord(c) - 29) if c.isalpha() else c for c in _CERT)  # 'Rabies' -> '5DELHV'-style
     assert ingest.load(_text_pdf(shifted), lambda: _FakeOcr()).pages[0].source == "ocr"
+
+
+def test_empty_answer_retried_once_without_fallback(monkeypatch):
+    # Lilu: the model sometimes returns zero events for a dated reminders table; one retry, the better answer wins
+    pdf = make_pdf(["Patient: Lilu", "05-06-28 | Rabies Vaccine 3 Year | 05-07-25"] + [f"filler {i}" for i in range(20)])
+    answers = [[], [{"raw_name": "Rabies Vaccine 3 Year", "given_date": "05-07-25", "due_date": "05-06-28"}]]
+    calls = []
+
+    def fake(cfg, text, images=None, targets=None):
+        calls.append(cfg.model)
+        return RawExtraction.model_validate({"pets": [{"name": "Lilu", "events": answers[len(calls) - 1]}]}), {}
+
+    monkeypatch.setattr(llm_mod, "extract", fake)
+    res = extract_bytes(pdf, Config(primary=LlmConfig("u", "k", "m")), today=date(2026, 10, 2))
+    assert calls == ["m", "m"] and [e.rawName for e in res.data.pets[0].events] == ["Rabies Vaccine 3 Year"]
+
+
+def test_no_retry_when_page_has_no_dates(monkeypatch):
+    pdf = make_pdf(["Patient: Lilu", "Thank you for visiting"] + [f"filler {i}" for i in range(20)])
+    calls = []
+
+    def fake(cfg, text, images=None, targets=None):
+        calls.append(cfg.model)
+        return RawExtraction.model_validate({"pets": [{"name": "Lilu", "events": []}]}), {}
+
+    monkeypatch.setattr(llm_mod, "extract", fake)
+    extract_bytes(pdf, Config(primary=LlmConfig("u", "k", "m")), today=date(2026, 10, 2))
+    assert calls == ["m"]

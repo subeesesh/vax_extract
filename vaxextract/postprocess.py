@@ -55,6 +55,30 @@ def _months(v: Optional[int]) -> Optional[int]:
     return v if v and 0 < v <= 12 * 6 else None
 
 
+_INTERVAL = re.compile(r"(?<![\w.])(\d{1,2})\s*-?\s*(?:(yrs?|years?|y)|(mos?|months?))(?![a-z])", re.I)
+
+
+def _single(months: set[int]) -> Optional[int]:
+    """The one interval a name prints. Used for a matched item only when it matches a single requested name: in
+    'DA2/PV/Lepto/Rabies(1yr)' the interval is the Rabies part's, not DHPP's or Lepto's."""
+    return next(iter(months)) if len(months) == 1 else None
+
+
+def _printed_months(name: str) -> set[int]:
+    """Validity intervals printed in an item's name ('DAPP 3 year' -> {36}, 'DA2P-Pv 3yr 4L 1yr' -> {36, 12})."""
+    found = {int(n) * 12 if y else int(n) for n, y, _ in _INTERVAL.findall(name)}
+    return {m for m in found if _months(m)}
+
+
+def _item_months(name: str, llm_months: Optional[int]) -> Optional[int]:
+    """The validity interval of a whole printed item (no requested name to split it by): the interval printed in its
+    name wins over the model's (which it sometimes leaves out); a combination printing different intervals for its
+    parts ('DA2P-Pv 3yr 4L 1yr') is current only until its first part runs out, so the shortest. A matched part keeps
+    its own interval instead."""
+    printed = _printed_months(name)
+    return min(printed) if printed else _months(llm_months)
+
+
 def _due_list(rp: RawPet, order: str, today: date) -> bool:
     """Every row that prints one date prints a future one: a 'vaccinations done' list of next-due dates
     (Cobblestone certificates: '02-11-27 | Kennel Cough-oral'), not misreads - a misread is one stray future date
@@ -117,12 +141,13 @@ def _build_pet(rp: RawPet, order: str, today: date, targets: list[str], lines: l
         if unknown:
             reasons.append("matched names not in the request: " + ", ".join(unknown))
         if not matches:
-            evs.append(_Ev(name, None, False, g, d, evidence, _months(e.duration_months),
+            evs.append(_Ev(name, None, False, g, d, evidence, _item_months(name, e.duration_months),
                            "document" if d else None, reasons))
             continue
         for t, m in matches.items():
             evs.append(_Ev(name, t, m.partial, g, d, evidence,
-                           _months(m.duration_months) or _months(e.duration_months),
+                           _months(m.duration_months) or _months(e.duration_months)
+                           or (_single(_printed_months(name)) if len(matches) == 1 else None),
                            "document" if d else None, list(reasons)))
             if g:
                 seen.add((t, g))
@@ -323,6 +348,55 @@ def _coverage_warnings(text: str, seen: set, order: str, targets: list[str]) -> 
     return warns
 
 
+def _same(field: str, a: Optional[str], b: Optional[str]) -> bool:
+    if not a or not b:
+        return False
+    if field == "phone":
+        da, db = re.sub(r"\D", "", a)[-10:], re.sub(r"\D", "", b)[-10:]
+        return len(da) >= 7 and da == db
+    return re.sub(r"\W", "", a).lower() == re.sub(r"\W", "", b).lower()
+
+
+def _not_the_clinic(owner, clinic):
+    """The model sometimes fills the owner's empty phone/email/address with the clinic's (Leo: owner phone and email
+    = Elgin Animal Hospital's). A contact detail identical to the clinic's is the clinic's: drop it from the owner."""
+    if not owner or not clinic:
+        return owner
+    copied = {f for f in ("address", "phone", "email") if _same(f, getattr(owner, f), getattr(clinic, f))}
+    return owner.model_copy(update={f: None for f in copied}) if copied else owner
+
+
+def _merge_surname_pets(pets: list[RawPet]) -> list[RawPet]:
+    """One animal listed twice, once with the owner's surname attached ('Ollie' on the invoice lines, 'Ollie
+    McAuliffe's Reminders' below): merge them under the bare name, and drop that surname from the other pets that
+    carry it ('Mila McAuliffe' -> 'Mila')."""
+    names = [(p.name or "").strip() for p in pets]
+    surnames = set()
+    for a in names:
+        for b in names:
+            extra = b[len(a):].strip() if a and b.lower().startswith(a.lower() + " ") else ""
+            if re.fullmatch(r"[A-Z][A-Za-z'\-]{2,}", extra):
+                surnames.add(extra.lower())
+    if not surnames:
+        return pets
+    out: dict = {}
+    for p in pets:
+        name = (p.name or "").strip()
+        words = name.split()
+        if len(words) > 1 and words[-1].lower() in surnames:
+            name = " ".join(words[:-1])
+        key = name.lower()
+        if key not in out:
+            out[key] = p.model_copy(update={"name": name, "events": list(p.events)})
+            continue
+        k = out[key]  # same animal: keep every event, fill fields the first entry lacks
+        k.events += p.events
+        for f in ("species", "breed", "sex", "weight", "color", "microchipNumber"):
+            if not getattr(k, f) and getattr(p, f):
+                setattr(k, f, getattr(p, f))
+    return list(out.values())
+
+
 def build_data(raw: RawExtraction, text: str, today: Optional[date] = None, targets: Optional[list[str]] = None):
     """RawExtraction + OCR text + requested vaccine names -> (Data, review_reasons)."""
     today = today or date.today()
@@ -331,7 +405,7 @@ def build_data(raw: RawExtraction, text: str, today: Optional[date] = None, targ
     order = D.infer_order(strings)
     seen: set = set()
     lines = [ln for ln in text.splitlines() if ln.strip()]
-    pets = [_build_pet(p, order, today, targets, lines, seen) for p in raw.pets]
+    pets = [_build_pet(p, order, today, targets, lines, seen) for p in _merge_surname_pets(raw.pets)]
     reasons: list[str] = []
     if not pets:
         reasons.append("no pet found")
@@ -351,5 +425,6 @@ def build_data(raw: RawExtraction, text: str, today: Optional[date] = None, targ
     missed = _coverage_warnings(text, seen, order, targets)
     if missed:
         reasons.append(f"possible missed events ({len(missed)}): " + " ; ".join(missed[:3]))
-    data = Data(pets=pets, owner=raw.owner, clinic=raw.clinic, veterinarian=raw.veterinarian)
+    data = Data(pets=pets, owner=_not_the_clinic(raw.owner, raw.clinic), clinic=raw.clinic,
+                veterinarian=raw.veterinarian)
     return data, reasons

@@ -8,6 +8,7 @@ from datetime import date
 from pathlib import Path
 from typing import Optional
 
+from . import dates as D
 from . import ingest, llm, ocr
 from .layout import serialize
 from .llm import LlmConfig, LlmError
@@ -56,6 +57,10 @@ def _usage(acc: TokenUsage, u: dict) -> None:
     acc.totalTokens = acc.inputTokens + acc.outputTokens
 
 
+def _no_events(r: Result) -> bool:
+    return not any(p.events or p.diagnosticTests for p in r.data.pets)
+
+
 def _score(r: Result):
     return (len(r.meta.reviewReasons), -sum(len(p.events) for p in r.data.pets))
 
@@ -87,6 +92,13 @@ def extract_bytes(data: bytes, cfg: Config, today: Optional[date] = None,
     result: Optional[Result] = None
     try:
         result = _run("primary", cfg.primary, text, None, today, targets, usage, meta_base)
+        if not cfg.fallback and _no_events(result) and D.dates_in_text(text, D.default_order()):
+            # the model sometimes answers with zero events for a page that plainly lists dated vaccines (same
+            # text, same prompt, temperature 0): one more try, keep the better answer (a configured fallback
+            # tier already handles this case)
+            again = _run("primary", cfg.primary, text, None, today, targets, usage, meta_base)
+            if _score(again) < _score(result):
+                result = again
     except LlmError as e:
         if not cfg.fallback:
             raise
