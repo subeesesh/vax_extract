@@ -745,3 +745,14 @@ def test_only_one_part_of_the_combination_printed_under_two_names_goes_to_review
     pet, _ = run([ev("DA2PP 3yr", "07-01-25", "07-01-28", m=[part]), ev("Lepto Annual", "07-01-25", "07-01-26", m=[part])],
                  ["DHLPP / FVRCP"])
     assert not pet.vaccinations[0].needsHumanReview
+
+
+
+# ---------------- P8 ----------------
+def test_document_that_is_not_a_vaccine_record_gives_no_dates():
+    # MIKO: a screenshot of the upload/scan screen; 'DHLPP / FVRCP | Wed 09/09/2026 05:58 AM' is a timestamp
+    raw = RawExtraction.model_validate({"document_type": "other", "pets": [{"name": "MIKO", "events": [
+        ev("DHLPP / FVRCP", None, "09/09/2026", m=["DHLPP / FVRCP"])]}]})
+    data, reasons = build_data(raw, "", TODAY, ["DHLPP / FVRCP"])
+    v = data.pets[0].vaccinations[0]
+    assert v.expirationDate is None and not v.matchedComponents and "not a vaccine record" in reasons

@@ -654,6 +654,7 @@ _NAMED_PET = [re.compile(p) for p in (
     r"(?i:\bpatient chart for)\s+([A-Z][A-Za-z\-]+)",                     # 'Patient Chart for Lillie'
 )]
 MISSING_PET = "pet named in the document but not extracted"
+NOT_RECORD = "not a vaccine record"
 
 
 def _missing_pets(text: str, pets: list[Pet]) -> list[str]:
@@ -680,9 +681,11 @@ def build_data(raw: RawExtraction, text: str, today: Optional[date] = None, targ
     lines = [ln for ln in text.splitlines() if ln.strip()]
     people = {w.lower() for party in (raw.owner, raw.veterinarian) if party and party.name
               for w in re.findall(r"[A-Za-z][A-Za-z'\-]+", party.name) if len(w) > 2}
-    named = [p.model_copy(update={"name": _pet_name(p.name, people)}) for p in raw.pets]
+    other = (raw.document_type or "").strip().lower() == "other"  # a software screen's timestamps are not expiries
+    named = [p.model_copy(update={"name": _pet_name(p.name, people), **({"events": []} if other else {})})
+             for p in raw.pets]
     pets = [_build_pet(p, order, today, targets, lines, seen, expansion) for p in _merge_surname_pets(named)]
-    reasons: list[str] = []
+    reasons: list[str] = [NOT_RECORD] if other else []
     if not pets:
         reasons.append("no pet found")
     owner = (raw.owner.name or "").strip().lower() if raw.owner else ""

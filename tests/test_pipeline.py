@@ -300,3 +300,22 @@ def test_no_retry_when_page_has_no_dates(monkeypatch):
     monkeypatch.setattr(llm_mod, "extract", fake)
     extract_bytes(pdf, Config(primary=LlmConfig("u", "k", "m")), today=date(2026, 10, 2))
     assert calls == ["m"]
+
+
+
+def test_reads_disagreeing_on_document_type_keep_the_dates_and_flag(monkeypatch):
+    # MIKO-like: the first read calls it a software screen, the retry reads timestamps as due dates
+    pdf = make_pdf(["Vax Verify Results", "DHLPP / FVRCP | Wed 09/09/2026 05:58 AM"] + [f"filler {i}" for i in range(20)])
+    ev = [{"raw_name": "DHLPP / FVRCP", "kind": "vaccine", "due_date": "09/09/2026"}]
+    answers = [{"document_type": "other", "pets": [{"name": "MIKO", "events": ev}]},
+               {"document_type": "vaccine_record", "pets": [{"name": "MIKO", "events": ev}]}]
+    calls = []
+
+    def fake(cfg, text, images=None, targets=None):
+        calls.append(1)
+        return RawExtraction.model_validate(answers[len(calls) - 1]), {}
+
+    monkeypatch.setattr(llm_mod, "extract", fake)
+    res = extract_bytes(pdf, Config(primary=LlmConfig("u", "k", "m")), today=date(2026, 10, 2))
+    assert len(calls) == 2 and res.data.pets[0].events and res.meta.needsHumanReview
+    assert any("not a vaccine record?" in r for r in res.meta.reviewReasons)

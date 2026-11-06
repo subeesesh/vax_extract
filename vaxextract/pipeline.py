@@ -12,7 +12,7 @@ from . import dates as D
 from . import ingest, llm, ocr
 from .layout import serialize
 from .llm import LlmConfig, LlmError
-from .postprocess import MISSING_PET, build_data
+from .postprocess import MISSING_PET, NOT_RECORD, build_data
 from .schema import Data, Meta, Result, TokenUsage
 
 
@@ -61,6 +61,10 @@ def _no_events(r: Result) -> bool:
     return not any(p.events or p.diagnosticTests for p in r.data.pets)
 
 
+def _not_record(r: Result) -> bool:
+    return NOT_RECORD in r.meta.reviewReasons
+
+
 def _missing_pet(r: Result) -> bool:
     return any(x.startswith(MISSING_PET) for x in r.meta.reviewReasons)
 
@@ -102,7 +106,13 @@ def extract_bytes(data: bytes, cfg: Config, today: Optional[date] = None,
             # text, same prompt, temperature 0): one more try, keep the better answer (a configured fallback
             # tier already handles this case)
             again = _run("primary", cfg.primary, text, None, today, targets, usage, meta_base)
-            if _score(again) < _score(result):
+            if _not_record(result) != _not_record(again):
+                # one read says it is no vaccine record (a software screen), the other found vaccines: keep the
+                # vaccines, but a person decides
+                result = again if _not_record(result) else result
+                result.meta.reviewReasons.append(f"{NOT_RECORD}? the two reads disagree")
+                result.meta.needsHumanReview = True
+            elif _score(again) < _score(result):
                 result = again
     except LlmError as e:
         if not cfg.fallback:

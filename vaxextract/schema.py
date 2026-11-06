@@ -69,6 +69,7 @@ class RawPet(_Lenient):
 
 
 class RawExtraction(_Lenient):
+    document_type: Optional[str] = None  # 'vaccine_record' | 'other' (a software screen, an upload list, ...)
     pets: list[RawPet] = Field(default_factory=list)
     owner: Optional[Party] = None
     clinic: Optional[Party] = None

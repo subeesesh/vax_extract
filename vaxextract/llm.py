@@ -57,7 +57,8 @@ def output_schema(targets: Optional[list[str]] = None) -> dict:
     pet = obj({**{k: s for k in ("name", "species", "breed", "sex", "weight", "color", "microchipNumber")},
                "events": {"type": "array", "items": event}})
     party = obj({"name": s, "address": s, "phone": s, "email": s})
-    return obj({"pets": {"type": "array", "items": pet}, "owner": party,
+    return obj({"document_type": {"type": "string", "enum": ["vaccine_record", "other"]},
+                "pets": {"type": "array", "items": pet}, "owner": party,
                 "clinic": obj({"name": s, "address": s, "phone": s, "email": s, "website": s}),
                 "veterinarian": obj({"name": s, "licenseNumber": s})})
 
