@@ -639,3 +639,39 @@ def test_quoted_letters_with_spaces_and_lone_letter_are_kept():
                   ev("DA2PP+L Annual", "06-19-25", "06-19-26", m=[{"name": "Leptospirosis", "shown_by": "L"}])],
                  ["DAP", "Leptospirosis"])
     assert [v.expirationDate for v in pet.vaccinations] == ["2027-10-13", "2026-06-19"]
+
+
+
+# ---------------- P4: a single-disease row is a part of the requested combination ----------------
+EXP = {"DHLPP / FVRCP": [{"label": "DHLPP", "species": "dog",
+                          "diseases": ["Distemper", "Hepatitis", "Leptospirosis", "Parainfluenza", "Parvovirus"]},
+                         {"label": "FVRCP", "species": "cat",
+                          "diseases": ["Feline Viral Rhinotracheitis", "Calicivirus", "Panleukopenia"]}],
+       "Leptospirosis": [{"label": "Leptospirosis", "species": None, "diseases": ["Leptospirosis"]}],
+       "k9 Influenza": [{"label": "k9 Influenza", "species": "canine", "diseases": ["Canine Influenza"]}]}
+T4 = ["DHLPP / FVRCP", "Leptospirosis", "k9 Influenza"]
+
+
+def run4(pet_events, species="Canine", expansion=EXP):
+    raw = RawExtraction.model_validate({"pets": [{"name": "X", "species": species, "events": pet_events}]})
+    data, _ = build_data(raw, "", TODAY, T4, expansion)
+    return {v.name: v for v in data.pets[0].vaccinations}
+
+
+def test_lepto_row_joins_the_combination():
+    # Calla-like: DA2PP 3 year due 2028, Lepto 1 year due 2027 matched only to Leptospirosis by the LLM
+    v = run4([ev("Canine DA2PP 3 year", "11-28-25", "11-28-28", m=[{"name": "DHLPP / FVRCP", "partial": True}]),
+              ev("Canine Leptospirosis 1 year", "11-28-25", "11-26-27", m=["Leptospirosis"])])
+    assert (v["DHLPP / FVRCP"].expirationDate, v["DHLPP / FVRCP"].needsHumanReview) == ("2027-11-26", False)
+    assert v["Leptospirosis"].expirationDate == "2027-11-26"
+
+
+def test_no_link_without_definitions_or_for_a_cat_or_an_unrelated_disease():
+    rows = [ev("FVRCP", "11-28-25", "11-28-28", m=[{"name": "DHLPP / FVRCP", "partial": False}]),
+            ev("Lepto", "11-28-25", "11-26-27", m=["Leptospirosis"]),
+            ev("Canine Influenza H3N2", "11-28-25", "11-26-26", m=["k9 Influenza"])]
+    for species, exp in [("Feline", EXP), ("Canine", {})]:
+        assert run4(rows, species, exp)["DHLPP / FVRCP"].expirationDate == "2028-11-28"
+    v = run4([ev("DA2PP", "11-28-25", "11-28-28", m=[{"name": "DHLPP / FVRCP", "partial": True}]),
+              ev("Canine Influenza H3N2", "11-28-25", "11-26-26", m=["k9 Influenza"])])
+    assert v["DHLPP / FVRCP"].expirationDate == "2028-11-28"  # influenza is not parainfluenza

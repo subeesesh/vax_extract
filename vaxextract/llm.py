@@ -219,6 +219,14 @@ def expand_targets(cfg: LlmConfig, targets: Optional[list[str]]):
     return exp, usage
 
 
+def cached_expansion(cfg: LlmConfig, targets: Optional[list[str]]) -> dict:
+    """The expansion already written for this target list (no call): {} if there is none."""
+    if not targets:
+        return {}
+    key = (cfg.model, tuple(targets))
+    return _EXPANSIONS.get(key) or _load_cached(key) or {}
+
+
 def extract(cfg: LlmConfig, text: str, images: Optional[list[bytes]] = None, targets: Optional[list[str]] = None):
     """-> (RawExtraction, usage dict). One repair retry on invalid JSON."""
     total = {"prompt_tokens": 0, "completion_tokens": 0}

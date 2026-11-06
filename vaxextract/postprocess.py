@@ -160,8 +160,54 @@ def _due_list(rp: RawPet, order: str, today: date) -> bool:
 _NOT_GIVEN = re.compile(r"\b(declined|refused|not given)\b", re.I)
 
 
-def _build_pet(rp: RawPet, order: str, today: date, targets: list[str], lines: list[str], seen: set):
+def _words(disease: str) -> frozenset:
+    return frozenset(re.findall(r"[a-z0-9]+", disease.lower()))
+
+
+def _same_disease(a: str, b: str) -> bool:
+    """'Canine Distemper' = 'Distemper' (one name's words inside the other's); 'Canine Influenza' != 'Parainfluenza'."""
+    wa, wb = _words(a), _words(b)
+    return bool(wa and wb) and (wa <= wb or wb <= wa)
+
+
+_SPECIES = {"dog": "dog", "dogs": "dog", "canine": "dog", "k9": "dog", "cat": "cat", "cats": "cat", "feline": "cat"}
+
+
+def _species(s: Optional[str]) -> set:
+    return {_SPECIES[w] for w in re.findall(r"[a-z0-9]+", (s or "").lower()) if w in _SPECIES}
+
+
+def _diseases(expansion: dict, target: str, species: set) -> list[list[str]]:
+    """The disease lists a requested name stands for, for the pet's species (all of them if the species is unknown)."""
+    out = []
+    for alt in expansion.get(target) or []:
+        sp = _species(alt.get("species"))
+        if not sp or not species or sp & species:
+            out.append([d for d in alt.get("diseases") or [] if d])
+    return [d for d in out if d]
+
+
+def _parts_of(expansion: dict, targets: list[str], species: set) -> dict:
+    """For each requested name B, the requested combination names A that contain every disease of B (Leptospirosis
+    -> DHLPP / FVRCP for a dog): a row of B is also a part of A. From the name definitions the LLM wrote for this
+    request; nothing here knows vaccine names. {} without definitions."""
+    out: dict = defaultdict(list)
+    for b in targets:
+        for a in targets:
+            if a == b:
+                continue
+            for db in _diseases(expansion, b, species):
+                if any(len(da) > len(db) and all(any(_same_disease(x, y) for y in da) for x in db)
+                       for da in _diseases(expansion, a, species)):
+                    out[b].append(a)
+                    break
+    return out
+
+
+def _build_pet(rp: RawPet, order: str, today: date, targets: list[str], lines: list[str], seen: set,
+               expansion: Optional[dict] = None):
     canon = {t.strip().lower(): t for t in targets}
+    parts_of = _parts_of(expansion or {}, targets, _species(rp.species))
     evs: list[_Ev] = []
     diags: dict = {}
     due_list = _due_list(rp, order, today)
@@ -209,6 +255,10 @@ def _build_pet(rp: RawPet, order: str, today: date, targets: list[str], lines: l
                     unknown.append(m.name)
             elif t not in matches:
                 matches[t] = m
+        for b, m in list(matches.items()):  # a Lepto row is also a part of the requested DHLPP
+            for a in parts_of.get(b, []):
+                if a not in matches:
+                    matches[a] = m.model_copy(update={"partial": True})
         if unknown:
             reasons.append("matched names not in the request: " + ", ".join(unknown))
         if not matches:
@@ -570,15 +620,16 @@ def _missing_pets(text: str, pets: list[Pet]) -> list[str]:
     return found
 
 
-def build_data(raw: RawExtraction, text: str, today: Optional[date] = None, targets: Optional[list[str]] = None):
-    """RawExtraction + OCR text + requested vaccine names -> (Data, review_reasons)."""
+def build_data(raw: RawExtraction, text: str, today: Optional[date] = None, targets: Optional[list[str]] = None,
+               expansion: Optional[dict] = None):
+    """RawExtraction + OCR text + requested vaccine names (+ the LLM's definitions of them) -> (Data, review_reasons)."""
     today = today or date.today()
     targets = list(dict.fromkeys(t.strip() for t in targets or [] if t and t.strip()))
     strings = [s for p in raw.pets for e in p.events for s in (e.given_date, e.due_date)]
     order = D.infer_order(strings)
     seen: set = set()
     lines = [ln for ln in text.splitlines() if ln.strip()]
-    pets = [_build_pet(p, order, today, targets, lines, seen) for p in _merge_surname_pets(raw.pets)]
+    pets = [_build_pet(p, order, today, targets, lines, seen, expansion) for p in _merge_surname_pets(raw.pets)]
     reasons: list[str] = []
     if not pets:
         reasons.append("no pet found")

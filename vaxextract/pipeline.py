@@ -72,7 +72,7 @@ def _score(r: Result):
 def _run(tier: str, lcfg: LlmConfig, text: str, images, today, targets, usage: TokenUsage, meta_base: dict) -> Result:
     raw, u = llm.extract(lcfg, text, images, targets)
     _usage(usage, u)
-    data, reasons = build_data(raw, text, today, targets)
+    data, reasons = build_data(raw, text, today, targets, llm.cached_expansion(lcfg, targets))
     meta = Meta(tier=tier, needsHumanReview=bool(reasons), reviewReasons=reasons, **meta_base)
     return Result(data=data, meta=meta, tokenUsage=usage.model_copy())
 
