@@ -36,6 +36,7 @@ class RawMatch(_Lenient):
     name: Optional[str] = None
     partial: bool = False
     duration_months: Optional[int] = None
+    shown_by: Optional[str] = None  # the letters/words of raw_name that name this match's disease ('L', 'Lepto')
 
 
 class RawEvent(_Lenient):

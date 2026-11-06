@@ -4,7 +4,7 @@ Return ONE JSON object and nothing else:
 {
  "pets": [{"name": str|null, "species": str|null, "breed": str|null, "sex": str|null, "weight": str|null, "color": str|null, "microchipNumber": str|null,
    "events": [{"raw_name": str, "kind": "vaccine"|"diagnostic"|"other", "given_date": str|null, "due_date": str|null, "interval_text": str|null, "duration_months": int|null,
-     "matches": [{"name": str, "partial": bool, "duration_months": int|null}]}]}],
+     "matches": [{"name": str, "shown_by": str|null, "partial": bool, "duration_months": int|null}]}]}],
  "owner": {"name": str|null, "address": str|null, "phone": str|null, "email": str|null},
  "clinic": {"name": str|null, "address": str|null, "phone": str|null, "email": str|null, "website": str|null},
  "veterinarian": {"name": str|null, "licenseNumber": str|null}
@@ -23,7 +23,11 @@ Rules:
 6. matches (vaccines only): every REQUESTED VACCINE NAME that this item protects against. Copy each name exactly as listed; never add a name that is not in the list.
  - Each requested name may be listed with the diseases it stands for; use those definitions. Otherwise work them out: expand abbreviations letter by letter or part by part (each letter or part of a combination abbreviation is one disease), and treat names joined by '/' as alternatives (e.g. one per species).
  - Then judge which diseases the item protects against from its printed name, product or abbreviation, tolerating OCR misspellings, and using the pet's species where a name depends on it.
- - The item matches a requested name if it protects against at least one of that name's diseases. A combination item matches every requested name it covers. partial = true when the item covers only some of the diseases that name (or the alternative that fits the pet) stands for. duration_months on a match = the interval printed next to that component inside a combination name, else null. Use [] when nothing fits or no list is given.
+ - The item matches a requested name if its printed name shows at least one of that name's diseases. A combination item matches every requested name it covers; it fully matches (partial = false) a requested name whose every disease it shows (DHLPP fully matches DAP).
+ - shown_by: the letters or words of raw_name that show that name's disease, copied exactly as printed: a letter of an abbreviation ('L' of 'DHLPP'), a whole disease word ('Lepto', 'Distemper') or a product known to contain it. Words that name no disease ('Combo', 'Combination', 'Vaccine', 'Annual', 'Booster') show nothing. If no part of raw_name shows the disease, it is not a match.
+ - A disease printed after 'no', 'without' or 'excluding' ('DHPPV (NO LEPTO)') is not covered: never match it.
+ - A vaccine always matches the requested name of its primary disease, and it also matches (partial) every combination name that contains one of its diseases: 'Leptospirosis 1 year' matches Leptospirosis and DHLPP.
+ - partial = true when the item covers only some of the diseases that name (or the alternative that fits the pet) stands for. duration_months on a match = the interval printed next to that component inside a combination name, else null. Use [] when nothing fits or no list is given.
 7. Use null for anything not printed. Never invent values."""
 
 

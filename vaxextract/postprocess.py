@@ -99,6 +99,51 @@ def _item_months(name: str, llm_months: Optional[int]) -> Optional[int]:
     return min(printed) if printed else _months(llm_months)
 
 
+_NEGATED = re.compile(r"\b(?:no(?!\.)|non|not|without|excl\w*|minus|w/o)\W*$", re.I)
+
+
+def _shown(name: str, quote: Optional[str]) -> bool:
+    """A match counts only if the words it quotes as showing the disease are printed in the row's name, and not
+    after 'no' / 'without' ('DHPPV (NO LEPTO)'). A one- or two-letter quote is an abbreviation letter: it must be
+    printed in that case ('L' of 'DHLPP', not the l of 'Annual'). Spaces and punctuation are ignored. A list of
+    quotes ('D, A, P' of 'DHLPP') counts if every one of them is shown."""
+    pieces = [p for p in re.split(r"\s*(?:[,;&+]|\band\b)\s*", quote or "") if p.strip()]
+    if len(pieces) == 1 and all(len(w) <= 2 for w in pieces[0].split()):  # 'D P': letters apart
+        pieces = pieces[0].split()
+    if len(pieces) > 1:
+        return all(_shown(name, p) for p in pieces)
+    q = re.sub(r"[\W_]+", "", quote or "")
+    if not q:
+        return False
+    flat, at = "", []  # name without spaces/punctuation, and where each kept character came from
+    for i, c in enumerate(name):
+        if c.isalnum():
+            flat += c
+            at.append(i)
+    short = len(q) <= 2
+    hay, needle = (flat, q) if short else (flat.lower(), q.lower())
+    for k in [k for k in range(len(hay)) if hay.startswith(needle, k)]:
+        if _NEGATED.search(name[:at[k]]):
+            continue
+        if short and not _abbreviation(name, at[k]):
+            continue
+        return True
+    return False
+
+
+def _abbreviation(name: str, i: int) -> bool:
+    """The word around name[i] reads as an abbreviation: two or more capitals ('DHLPP', 'DAPPv', 'DA2PP'), or all
+    lower case with at most one vowel ('dhlpp', 'da2pp') - not an ordinary word ('Annual')."""
+    word = re.findall(r"\w+", name[:i][::-1][:40])  # characters of the word before i, reversed
+    word = (word[0][::-1] if word and name[:i] and name[i - 1].isalnum() else "") + re.match(r"\w*", name[i:]).group()
+    if _INTERVAL.fullmatch(word):  # '3YR' is an interval, not an abbreviation
+        return False
+    letters = [c for c in word if c.isalpha()]
+    if sum(c.isupper() for c in letters) >= 2 or letters == [name[i]] and name[i].isupper():  # or 'L' of 'DA2PP+L'
+        return True
+    return all(c.islower() for c in letters) and sum(c in "aeiou" for c in letters) <= 1
+
+
 def _due_list(rp: RawPet, order: str, today: date) -> bool:
     """Every row that prints one date prints a future one: a 'vaccinations done' list of next-due dates
     (Cobblestone certificates: '02-11-27 | Kennel Cough-oral'), not misreads - a misread is one stray future date
@@ -156,6 +201,8 @@ def _build_pet(rp: RawPet, order: str, today: date, targets: list[str], lines: l
             continue
         matches, unknown = {}, []
         for m in e.matches:
+            if not _shown(name, m.shown_by):  # nothing printed in the name shows that disease: not a match
+                continue
             t = canon.get((m.name or "").strip().lower())
             if t is None:
                 if m.name:
@@ -198,12 +245,19 @@ def _join_due_tests(tests: list[DiagnosticTest]) -> list[DiagnosticTest]:
 
 
 def _merge_dups(evs: list[_Ev]) -> list[_Ev]:
+    """The same dose printed twice (invoice line + certificate row) is one row. Rows of one day that match different
+    requested names and print different expiries are different parts ('Bordetella / Parainfluenza' due 2024 and
+    'DHPP 3yr' due 2026, both given 05-23-23): they stay apart, so the combination takes its first-expiring part in
+    force and an expired part is seen."""
     out: dict = {}
     for e in evs:
         undated = e.given is None and e.due is None  # never merge rows just because both lack dates
         key = (e.target, e.given, None if e.given else e.due,
                e.raw_name.lower() if e.target is None or undated else "")
         k = out.get(key)
+        if k is not None and e.due and k.due and e.due != k.due and _cover(e, evs) != _cover(k, evs):
+            key = key + (len(out),)  # another part given the same day
+            k = None
         if k is None:
             out[key] = e
             continue
@@ -268,14 +322,28 @@ def _iso(d: Optional[date]) -> Optional[str]:
     return d.isoformat() if d else None
 
 
-def _current(mine: list[_Ev], today: date) -> list[_Ev]:
+def _current(mine: list[_Ev], today: date, evs: list[_Ev]) -> list[_Ev]:
     """The rows still in force for one requested name: an expired row is history once another row for the name is
     still valid (last year's annual shot next to this year's 3-year one; 'Nobivac 4/Third' due 2021 next to
     'Nobivac 4' due 2027). Valid rows all stay - without knowing the components, a later dose may be another part of
     the combination (Lepto given after DHPP), not a replacement. Rows printing no expiry stay if they are the latest dose."""
     valid = any(s.due and s.due >= today for s in mine)
-    if not valid:  # all expired: the latest dose is the record, not the oldest due date (Sasuke's 2021 shot)
-        return _latest(mine)
+    if not valid:
+        # all expired: the latest dose of each part is the record, not the oldest due date (Sasuke's 2021 shot);
+        # rows matching the same requested names are one part ('DHPP 3yr' and 'DHPP Annual'; 'Lepto Annual' and 'Lepto 1st')
+        # A part counts only if it was still in force when the newest dose was given (Zelda: DHPP 3yr due 2026-05-22
+        # next to the 2025 Lepto); one that had lapsed by then was renewed by it (Sasuke: 2023 DA2PP, then DA2PP+L)
+        newest = _latest(mine)
+        last = max((e.given for e in newest if e.given), default=None)
+        if last is None:
+            return newest
+        parts: dict = defaultdict(list)
+        for e in mine:
+            parts[_cover(e, evs)].append(e)
+        out = list(newest)
+        for rows in parts.values():
+            out += [e for e in _latest(rows) if e not in out and e.due and e.due > last]
+        return out
     last = max((s.given for s in mine if s.given), default=None)
     return [r for r in mine if (r.due and (r.due >= today or not valid))
             or (not r.due and (r.given is None or r.given == last))]
@@ -338,7 +406,7 @@ def _rollup(target: str, evs: list[_Ev], today: date) -> Vaccination:
     mine = [e for e in evs if e.target == target]
     if not mine:
         return Vaccination(name=target)
-    cur = _current(mine, today)
+    cur = _current(mine, today, evs)
     full = _latest([e for e in cur if not e.partial])
     chosen = full + [e for e in cur if e.partial] if full else cur
     dated = [e for e in chosen if e.due]

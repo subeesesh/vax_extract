@@ -13,8 +13,10 @@ ROOT = Path(__file__).resolve().parents[1]
 def ev(name, g=None, d=None, kind="vaccine", m=(), dur=None, iv=None):
     """m: requested names the (fake) LLM matched; a tuple (name, months) carries a per-component interval.
     iv: the interval words the LLM quotes from the name ('annual')."""
-    matches = [{"name": x[0], "duration_months": x[1]} if isinstance(x, tuple) else x if isinstance(x, dict)
+    matches = [{"name": x[0], "duration_months": x[1]} if isinstance(x, tuple) else dict(x) if isinstance(x, dict)
                else {"name": x} for x in m]
+    for x in matches:  # by default the fake LLM quotes the whole printed name as what shows the disease
+        x.setdefault("shown_by", name)
     return {"raw_name": name, "kind": kind, "given_date": g, "due_date": d, "interval_text": iv,
             "duration_months": dur, "evidence": name, "matches": matches}
 
@@ -579,3 +581,61 @@ def test_all_expired_history_raises_no_part_flags():
                   ev("Annual DA2PP", "07-20-21", "07-20-22", m=[part])], ["DHLPP / FVRCP"])
     v = pet.vaccinations[0]
     assert (v.expirationDate, v.reviewReasons) == ("2026-06-19", [])
+
+
+# ---------------- P3: a match must be shown by the printed name ----------------
+def test_negated_disease_is_not_matched():
+    # COCO: 'DHPPV (NO LEPTO) 1Y' - the LLM matched Leptospirosis quoting 'LEPTO'
+    pet, _ = run([ev("DHPPV (NO LEPTO) 1Y", "09/26/2026", "09/26/2027",
+                     m=[{"name": "DHLPP / FVRCP", "partial": True, "shown_by": "DHPPV"},
+                        {"name": "Leptospirosis", "partial": False, "shown_by": "LEPTO"}])],
+                 ["DHLPP / FVRCP", "Leptospirosis"])
+    by = {v.name: v for v in pet.vaccinations}
+    assert by["DHLPP / FVRCP"].expirationDate == "2027-09-26"
+    assert by["Leptospirosis"].expirationDate is None and not by["Leptospirosis"].matchedComponents
+
+
+def test_match_quoting_letters_not_printed_is_dropped():
+    # Bear: 'DHPP vaccine - 1 year' matched to Leptospirosis via an 'L' that is not printed; a lower-case l
+    # inside a word ('Annual') is not an abbreviation letter either; no quote at all is no match
+    pet, _ = run([ev("DHPP vaccine - 1 year", "10/16/2026", "10/16/2027",
+                     m=[{"name": "Leptospirosis", "shown_by": "L"}]),
+                  ev("Distemper Combo Annual", "03-06-26", "03-06-27", m=[{"name": "Leptospirosis", "shown_by": "l"}]),
+                  ev("Distemper Annual Vacc", "03-06-26", "03-06-27", m=[{"name": "Leptospirosis", "shown_by": None}])],
+                 ["Leptospirosis"])
+    assert pet.vaccinations[0].expirationDate is None
+
+
+def test_quoted_abbreviation_letter_and_word_are_kept():
+    pet, _ = run([ev("DHLPP 3YR", "10/13/2024", "10/13/2027", m=[{"name": "Leptospirosis", "shown_by": "L"},
+                                                                {"name": "DAP", "shown_by": "DHLPP"}]),
+                  ev("Dose No. 2 lepto", "10/13/2026", "10/13/2027", m=[{"name": "Lepto 2", "shown_by": "Lepto"}]),
+                  ev("Nobivac Canine DAPPv 1", "09/14/2025", "09/28/2026", m=[{"name": "DA2PP", "shown_by": "DAPPv"}])],
+                 ["Leptospirosis", "DAP", "Lepto 2", "DA2PP"])
+    assert [v.expirationDate for v in pet.vaccinations] == ["2027-10-13", "2027-10-13", "2027-10-13", "2026-09-28"]
+
+
+def test_quoted_list_of_letters_is_kept():
+    # Mando: DAP requested, 'DHLPP 3YR' printed; the LLM quotes 'D, P, P'
+    pet, _ = run([ev("DHLPP 3YR", None, "Oct 13, 2027", m=[{"name": "DAP", "shown_by": "D, P, P"},
+                                                         {"name": "Rabies", "shown_by": "D, R"}])], ["DAP", "Rabies"])
+    assert [v.expirationDate for v in pet.vaccinations] == ["2027-10-13", None]
+
+
+def test_all_expired_combination_takes_parts_in_force_at_the_last_dose():
+    # Zelda (today 2026-11-06): DHPP 3yr due 2026-05-22 was still in force when Lepto was given 2025-06-05: the
+    # combination ran out on 2026-05-22. A Bordetella/Parainfluenza dose that lapsed in 2024 is no part of it any more
+    T = ["DHLPP / FVRCP", "Leptospirosis", "Bordetella"]
+    part = {"name": "DHLPP / FVRCP", "partial": True}
+    pet, _ = run([ev("Lepto Annual", "06-05-25", "06-05-26", m=[part, "Leptospirosis"]),
+                  ev("Bordetella / Parainfluenza IN", "05-23-23", "05-22-24", m=["Bordetella", part]),
+                  ev("DHPP 3yr", "05-23-23", "05-22-26", m=[part]),
+                  ev("DHPP Annual", "05-10-22", None, m=[part])], T)
+    assert [v.expirationDate for v in pet.vaccinations] == ["2026-05-22", "2026-06-05", "2024-05-22"]
+
+
+def test_quoted_letters_with_spaces_and_lone_letter_are_kept():
+    pet, _ = run([ev("DHLPP 3YR", None, "Oct 13, 2027", m=[{"name": "DAP", "shown_by": "D P"}]),
+                  ev("DA2PP+L Annual", "06-19-25", "06-19-26", m=[{"name": "Leptospirosis", "shown_by": "L"}])],
+                 ["DAP", "Leptospirosis"])
+    assert [v.expirationDate for v in pet.vaccinations] == ["2027-10-13", "2026-06-19"]

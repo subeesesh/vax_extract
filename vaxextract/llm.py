@@ -50,7 +50,7 @@ def output_schema(targets: Optional[list[str]] = None) -> dict:
     def obj(props: dict) -> dict:
         return {"type": "object", "properties": props, "required": list(props), "additionalProperties": False}
 
-    match = obj({"name": name, "partial": {"type": "boolean"}, "duration_months": i})
+    match = obj({"name": name, "shown_by": s, "partial": {"type": "boolean"}, "duration_months": i})
     event = obj({"raw_name": {"type": "string"}, "kind": {"type": "string", "enum": ["vaccine", "diagnostic", "other"]},
                  "given_date": s, "due_date": s, "interval_text": s, "duration_months": i,
                  "matches": {"type": "array", "items": match, **({} if targets else {"maxItems": 0})}})

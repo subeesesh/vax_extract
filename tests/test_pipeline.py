@@ -38,7 +38,7 @@ def test_pipeline_text_layer_with_fake_llm(monkeypatch):
         seen["text"] = text
         raw = RawExtraction.model_validate({"pets": [{"name": "Luna", "events": [
             {"raw_name": "Rabies", "kind": "vaccine", "given_date": "10/28/2025", "due_date": "10/28/2026",
-             "matches": targets}]}]})
+             "matches": [{"name": x, "shown_by": "Rabies"} for x in targets]}]}]})
         return raw, {"prompt_tokens": 100, "completion_tokens": 20}
 
     monkeypatch.setattr(llm_mod, "extract", fake)
