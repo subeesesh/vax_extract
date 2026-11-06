@@ -729,3 +729,19 @@ def test_pet_name_drops_record_numbers_and_owner_or_vet_names():
                                                  {"name": "Jumanji Katherine"}, {"name": "Szabo"}]})
     data, _ = build_data(raw, "", TODAY, [])
     assert [p.name for p in data.pets] == ["KANE", "Bear", "Jumanji", "Szabo"]
+
+
+
+# ---------------- P7 ----------------
+def test_only_one_part_of_the_combination_printed_under_two_names_goes_to_review():
+    # Kismet: 'Lepto Annual' and 'Lepto 1st' (both Leptospirosis), the DHPP row cut off the photo
+    T = ["DHLPP / FVRCP", "Leptospirosis"]
+    part = {"name": "DHLPP / FVRCP", "partial": True}
+    pet, _ = run([ev("Lepto Annual", "07-01-25", "07-01-26", m=[part, "Leptospirosis"]),
+                  ev("Lepto 1st", "06-05-25", None, m=[part, "Leptospirosis"])], T)
+    v = pet.vaccinations[0]
+    assert v.expirationDate == "2026-07-01" and any("combination not complete" in r for r in v.reviewReasons)
+    # DA2PP + Lepto when Leptospirosis is not requested: two parts, nothing missing
+    pet, _ = run([ev("DA2PP 3yr", "07-01-25", "07-01-28", m=[part]), ev("Lepto Annual", "07-01-25", "07-01-26", m=[part])],
+                 ["DHLPP / FVRCP"])
+    assert not pet.vaccinations[0].needsHumanReview

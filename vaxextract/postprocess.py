@@ -512,7 +512,11 @@ def _rollup(target: str, evs: list[_Ev], today: date) -> Vaccination:
     # When every dose has expired only the latest is in force; judge the parts on all rows, as the history shows them
     valid = any(e.due and e.due >= today for e in mine)
     basis = cur if valid else mine
-    if all(e.partial for e in basis) and len({n.lower() for e in basis for n in [e.raw_name, *e.also]}) == 1:
+    # (also when the rows print different names but are all the one part matched to another requested name:
+    # Kismet's 'Lepto Annual' and 'Lepto 1st', both Leptospirosis, and no DHPP row)
+    covers = {_cover(e, evs) for e in basis}
+    one_part = len(covers) == 1 and len(next(iter(covers))) > 1
+    if all(e.partial for e in basis) and (one_part or len({n.lower() for e in basis for n in [e.raw_name, *e.also]}) == 1):
         reasons.append(f"combination not complete: only '{basis[0].raw_name}' is printed for {target}")
     if head.due is None:  # printed rows match the name but none gives or implies an expiry: a person has to look
         reasons.append(f"no expiry printed for {target}")
