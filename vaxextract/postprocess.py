@@ -599,6 +599,19 @@ def _not_the_clinic(owner, clinic):
     return owner.model_copy(update={f: None for f in copied}) if copied else owner
 
 
+def _pet_name(name: Optional[str], people: set) -> Optional[str]:
+    """The pet's own name: no record number before it ('26-187 KANE SZABO'), no ID in brackets ('Bear (26-7430)',
+    'Max (Record - 47667)'), no owner or vet name after it ('KANE SZABO' with client Alexandra Szabo, 'Jumanji
+    Katherine' with provider Katherine ...). Never cut to nothing."""
+    s = re.sub(r"\s*[(\[][^)\]]*\d[^)\]]*[)\]]", " ", name or "")
+    words = s.split()
+    while len(words) > 1 and any(c.isdigit() for c in words[0]):
+        words = words[1:]
+    while len(words) > 1 and words[-1].lower().strip(".,") in people:
+        words = words[:-1]
+    return " ".join(words) or name
+
+
 def _merge_surname_pets(pets: list[RawPet]) -> list[RawPet]:
     """One animal listed twice, once with the owner's surname attached ('Ollie' on the invoice lines, 'Ollie
     McAuliffe's Reminders' below): merge them under the bare name, and drop that surname from the other pets that
@@ -661,7 +674,10 @@ def build_data(raw: RawExtraction, text: str, today: Optional[date] = None, targ
     order = D.infer_order(strings)
     seen: set = set()
     lines = [ln for ln in text.splitlines() if ln.strip()]
-    pets = [_build_pet(p, order, today, targets, lines, seen, expansion) for p in _merge_surname_pets(raw.pets)]
+    people = {w.lower() for party in (raw.owner, raw.veterinarian) if party and party.name
+              for w in re.findall(r"[A-Za-z][A-Za-z'\-]+", party.name) if len(w) > 2}
+    named = [p.model_copy(update={"name": _pet_name(p.name, people)}) for p in raw.pets]
+    pets = [_build_pet(p, order, today, targets, lines, seen, expansion) for p in _merge_surname_pets(named)]
     reasons: list[str] = []
     if not pets:
         reasons.append("no pet found")

@@ -719,3 +719,13 @@ def test_ocr_spelling_of_the_quoted_word_is_tolerated():
                                                                          "shown_by": "Bordatella Vaccine"}])],
                  ["Bordetella"])
     assert pet.vaccinations[0].expirationDate == "2027-07-31"
+
+
+
+# ---------------- P6: pet names ----------------
+def test_pet_name_drops_record_numbers_and_owner_or_vet_names():
+    raw = RawExtraction.model_validate({"owner": {"name": "Alexandra Szabo"}, "veterinarian": {"name": "Katherine Ames"},
+                                        "pets": [{"name": "26-187 KANE SZABO"}, {"name": "Bear (26-7430)"},
+                                                 {"name": "Jumanji Katherine"}, {"name": "Szabo"}]})
+    data, _ = build_data(raw, "", TODAY, [])
+    assert [p.name for p in data.pets] == ["KANE", "Bear", "Jumanji", "Szabo"]
