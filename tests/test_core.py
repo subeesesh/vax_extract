@@ -528,3 +528,54 @@ def test_pet_named_in_the_document_but_missing_is_flagged():
     raw = RawExtraction.model_validate({"pets": [{"name": "Ollie", "events": []}, {"name": "Mila McAuliffe", "events": []}]})
     _, reasons = build_data(raw, text, TODAY, [])
     assert not any("not extracted" in r for r in reasons)
+
+
+# ---------------- P2: latest dose ----------------
+def test_all_expired_uses_latest_dose():
+    # Sasuke (saske.webp): five yearly DA2PP doses, all expired by today -> the 2025 dose, not the 2021 one
+    T = ["DHLPP / FVRCP", "Leptospirosis"]
+    part = {"name": "DHLPP / FVRCP", "partial": True}
+    pet, _ = run([ev("DA2PP+L Annual DA2PP+Lepto", "06-19-25", "06-19-26", m=[part, "Leptospirosis"]),
+                  ev("Recombitek: C8 Lepto 4 + DAPPv 25x1", "06-19-24", "06-19-25", m=[part, "Leptospirosis"]),
+                  ev("Annual DA2PP", "06-27-23", "06-27-24", m=[part]),
+                  ev("Annual DA2PP", "07-20-21", "07-20-22", m=[part])], T)
+    assert [v.expirationDate for v in pet.vaccinations] == ["2026-06-19", "2026-06-19"]
+
+
+def test_latest_row_without_due_date_falls_back_to_dated_row():
+    # Kiya: a 2024 'Rabies' tag row with no due date after the 2023 3-year vaccine due 2026-03-02
+    pet, _ = run([ev("Rabies", "04-24-24", m=["Rabies"]),
+                  ev("GS Rabies Vaccine: Canine 3yr, #38139", "03-03-23", "03-02-26", m=["Rabies"])], ["Rabies"])
+    rab = pet.vaccinations[0]
+    assert (rab.expirationDate, rab.needsHumanReview) == ("2026-03-02", True)
+    assert rab.reviewReasons == ["latest dose prints no due date: 'Rabies' given 2024-04-24"]
+
+
+def test_older_dose_due_first_goes_to_review():
+    # Coco: two DaPP doses still valid, the older one due first: a later dose or another part? -> review
+    part = {"name": "DHLPP / FVRCP", "partial": True}
+    pet, _ = run([ev("Canine DaPP Third", "06-16-26", "06-16-29", m=[part]),
+                  ev("Canine Da2PP First", "03-25-26", "03-25-29", m=[part])], ["DHLPP / FVRCP"])
+    v = pet.vaccinations[0]
+    assert v.expirationDate == "2029-03-25" and v.needsHumanReview
+    assert any(r.startswith("older dose or another part? 'Canine Da2PP First'") for r in v.reviewReasons)
+
+
+def test_combination_parts_given_apart_stay_unflagged():
+    # DHPP 3 yr then a Lepto booster a year later: the older row is due LATER, so dose and part readings agree
+    part = {"name": "DHLPP / FVRCP", "partial": True}
+    pet, _ = run([ev("DHPP 3 Year", "09-18-25", "09-18-28", m=[part]),
+                  ev("Lepto 1 Year", "09-01-26", "09-01-27", m=[part])], ["DHLPP / FVRCP"])
+    v = pet.vaccinations[0]
+    assert (v.expirationDate, v.needsHumanReview) == ("2027-09-01", False)
+
+
+def test_all_expired_history_raises_no_part_flags():
+    # Sasuke again, as the model returned it on the re-run: every row partial for DHLPP and all expired.
+    # The latest dose is shown; the older 'Annual DA2PP' doses are history, not an expired part or a missing one
+    part = {"name": "DHLPP / FVRCP", "partial": True}
+    pet, _ = run([ev("DA2PP+L Annual DA2PP+Lepto", "06-19-25", "06-19-26", m=[part]),
+                  ev("Annual DA2PP", "06-27-23", "06-27-24", m=[part]),
+                  ev("Annual DA2PP", "07-20-21", "07-20-22", m=[part])], ["DHLPP / FVRCP"])
+    v = pet.vaccinations[0]
+    assert (v.expirationDate, v.reviewReasons) == ("2026-06-19", [])

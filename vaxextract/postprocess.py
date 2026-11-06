@@ -274,6 +274,8 @@ def _current(mine: list[_Ev], today: date) -> list[_Ev]:
     'Nobivac 4' due 2027). Valid rows all stay - without knowing the components, a later dose may be another part of
     the combination (Lepto given after DHPP), not a replacement. Rows printing no expiry stay if they are the latest dose."""
     valid = any(s.due and s.due >= today for s in mine)
+    if not valid:  # all expired: the latest dose is the record, not the oldest due date (Sasuke's 2021 shot)
+        return _latest(mine)
     last = max((s.given for s in mine if s.given), default=None)
     return [r for r in mine if (r.due and (r.due >= today or not valid))
             or (not r.due and (r.given is None or r.given == last))]
@@ -288,13 +290,32 @@ def _latest(rows: list[_Ev]) -> list[_Ev]:
     return [e for e in due if e.due == max(x.due for x in due)] if due else rows
 
 
+def _cover(e: _Ev, evs: list[_Ev]) -> frozenset:
+    """Every requested name the row's printed line matches."""
+    return frozenset(x.target for x in evs if x.target and x.raw_name.lower() == e.raw_name.lower())
+
+
+def _dose_or_part(cur: list[_Ev], evs: list[_Ev]) -> list[str]:
+    """Two valid partial rows matching the same requested names, the older one due first (Coco: 'Canine Da2PP First'
+    due 2029-03-25, 'Canine DaPP Third' due 2029-06-16). A later dose of the same product means the later date; another
+    part of the combination (Lepto given after DHPP) means the earlier one. Without the components the two can't be told
+    apart, so the earliest stays (rule 1) and a person decides. When the older row is due later, both readings agree."""
+    rows = [e for e in cur if e.partial and e.due and e.given]
+    out = []
+    for a in rows:
+        for b in rows:
+            if a.given < b.given and a.due < b.due and _cover(a, evs) == _cover(b, evs):
+                out.append(f"older dose or another part? '{a.raw_name}' given {a.given.isoformat()} due "
+                           f"{a.due.isoformat()}, '{b.raw_name}' given {b.given.isoformat()} due {b.due.isoformat()}")
+    return out
+
+
 def _expired_parts(mine: list[_Ev], cur: list[_Ev], evs: list[_Ev], today: date) -> list[str]:
     """Expired parts of a combination that `_current` dropped while another part is still valid (Lepto due
     2026-10-09 next to DA2PP due 2027): the roll-up then shows the valid part's date, which is right by the rules,
     but the expired part needs a person. A row's coverage = every requested name its printed line matches; an
     expired row with the same coverage as a row still in force is just an older dose and stays history."""
-    def cover(e: _Ev) -> frozenset:
-        return frozenset(x.target for x in evs if x.target and x.raw_name.lower() == e.raw_name.lower())
+    cover = lambda e: _cover(e, evs)  # noqa: E731
 
     def redosed(e: _Ev) -> bool:  # a later dose of the same printed name exists anywhere on the document (Onyx)
         return any(x.raw_name.lower() == e.raw_name.lower() and x.given and e.given and x.given > e.given for x in evs)
@@ -322,17 +343,30 @@ def _rollup(target: str, evs: list[_Ev], today: date) -> Vaccination:
     chosen = full + [e for e in cur if e.partial] if full else cur
     dated = [e for e in chosen if e.due]
     head = min(dated, key=lambda e: (e.due, e.due_src != "document")) if dated else _latest(chosen)[0]
+    extra = []
+    if head.due is None and head.given:
+        # the latest row prints no due date (Kiya: a 2024 rabies tag row after the 2023 3-year vaccine): show the
+        # latest row that has one, and let a person check
+        older = [e for e in mine if e.due and e.given and e.given < head.given]
+        if older:
+            prev = max(older, key=lambda e: (e.given, e.due))
+            extra.append(f"latest dose prints no due date: '{head.raw_name}' given {head.given.isoformat()}")
+            chosen = [prev] + chosen
+            head = prev
     chosen = [head] + [e for e in chosen if e is not head]
     names = []
     for e in chosen:
         names += [n for n in [e.raw_name, *e.also] if n not in names]
     reasons = sorted({r for e in chosen for r in e.reasons})
-    # every row in force covers only part of the name and they are all one product: the rest is not on the document
-    if all(e.partial for e in cur) and len({n.lower() for e in cur for n in [e.raw_name, *e.also]}) == 1:
-        reasons.append(f"combination not complete: only '{cur[0].raw_name}' is printed for {target}")
+    # every row in force covers only part of the name and they are all one product: the rest is not on the document.
+    # When every dose has expired only the latest is in force; judge the parts on all rows, as the history shows them
+    valid = any(e.due and e.due >= today for e in mine)
+    basis = cur if valid else mine
+    if all(e.partial for e in basis) and len({n.lower() for e in basis for n in [e.raw_name, *e.also]}) == 1:
+        reasons.append(f"combination not complete: only '{basis[0].raw_name}' is printed for {target}")
     if head.due is None:  # printed rows match the name but none gives or implies an expiry: a person has to look
         reasons.append(f"no expiry printed for {target}")
-    reasons += _expired_parts(mine, cur, evs, today)
+    reasons += extra + _dose_or_part(cur, evs) + (_expired_parts(mine, cur, evs, today) if valid else [])
     return Vaccination(
         name=target,
         partialMatch=all(e.partial for e in cur),
