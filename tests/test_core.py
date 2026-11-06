@@ -66,8 +66,8 @@ def test_future_given_date_dropped_and_shown_to_reviewer():
     assert (rab.dateAdministered, rab.dueDate) == (None, None)
     assert rab.needsHumanReview and "2028-10-19 is in the future" in rab.reviewReasons[0]
     assert pet.vaccinations[0].expirationDate is None
-    t = pet.diagnosticTests[0]
-    assert (t.dateAdministered, t.dueDate, t.needsHumanReview) == (None, None, True)
+    t = pet.diagnosticTests[0]  # less than a year ahead: read as its due date, still flagged
+    assert (t.dateAdministered, t.dueDate, t.needsHumanReview) == (None, "2027-04-13", True)
 
 
 def test_list_of_only_future_dates_read_as_due_dates():
@@ -81,11 +81,13 @@ def test_list_of_only_future_dates_read_as_due_dates():
     assert triples(pet, True) >= {("Bordetella", None, "2027-02-11"), ("DHLPP / FVRCP", None, "2029-02-10"),
                                   ("Rabies", "2025-03-20", "2027-03-20")}
     assert not any(v.needsHumanReview for v in pet.events)
-    # one past date in the list -> the future ones may be misreads again
+    # one past date in the list -> the future ones may be misreads again: within a year they are read as due dates
+    # but flagged, further ahead they are not used
     pet, _ = run([ev("Kennel Cough-oral", "02-11-27", m=["Bordetella"]), ev("DA2PPV 3 year", "02-10-29", m=["Rabies"]),
                   ev("Rabies, 2 year", "03-20-27", m=["Rabies"]), ev("Lepto", "02-11-26", m=["Bordetella"])],
                  ["Bordetella", "Rabies"])
-    assert {v.dueDate for v in pet.events if v.dateAdministered is None} <= {None}
+    assert {v.dueDate for v in pet.events} == {"2027-02-11", "2027-03-20", None}  # 02-11-27 joins the 02-11-26 dose
+    assert all(v.needsHumanReview for v in pet.events if v.dueDate != None or v.dateAdministered is None)
 
 
 def test_wrapped_name_joined():
@@ -675,3 +677,45 @@ def test_no_link_without_definitions_or_for_a_cat_or_an_unrelated_disease():
     v = run4([ev("DA2PP", "11-28-25", "11-28-28", m=[{"name": "DHLPP / FVRCP", "partial": True}]),
               ev("Canine Influenza H3N2", "11-28-25", "11-26-26", m=["k9 Influenza"])])
     assert v["DHLPP / FVRCP"].expirationDate == "2028-11-28"  # influenza is not parainfluenza
+
+
+
+# ---------------- P5: reminder dates ----------------
+def test_month_only_given_date_is_a_reminder():
+    # Moose / Ace: the LLM put a reminder column's 'MM-YY' into given_date
+    pet, _ = run([ev("Ultra DAP+4L (FINAL BOOSTER)", "01-27", m=["DHLPP / FVRCP"]),
+                  ev("Rabies 1 year", "12-13-24", "12-13-25", m=["Rabies"])], ["DHLPP / FVRCP", "Rabies"])
+    v = pet.vaccinations[0]
+    assert (v.dateAdministered, v.expirationDate) == (None, "2027-01-01")
+
+
+def test_mixed_case_abbreviation_with_digit_shows_its_letters():
+    pet, _ = run([ev("Da2pl+cpv Booster", "09-25-26", "09-27", m=[{"name": "Leptospirosis", "shown_by": "l"}])],
+                 ["Leptospirosis"])
+    assert pet.vaccinations[0].expirationDate == "2027-09-01"
+
+
+
+def test_single_future_date_is_read_as_due_and_flagged():
+    # Xena: DATE GIVEN | DATE DUE, 'Rabies Vaccination | 11/26/2026' (given cell empty). Two years ahead stays a misread
+    pet, _ = run([ev("Rabies Vaccination", "11/26/2026", m=["Rabies"]),
+                  ev("DHPP", "10-19-28", m=["DHLPP / FVRCP"])], ["Rabies", "DHLPP / FVRCP"])
+    rab, dh = pet.vaccinations
+    assert (rab.expirationDate, rab.needsHumanReview) == ("2026-11-26", True)
+    assert dh.expirationDate is None and dh.needsHumanReview
+
+
+
+def test_earlier_reminder_beats_a_later_dose_expiry_and_is_flagged():
+    # Leo: 'DA2PP+L' given 12/04/2025 prints 12/04/2028; the Lepto 1yr reminder is due 12/04/2026
+    pet, _ = run([ev("Distemper+Leptospirosis (DA2PP+L) Vaccine", "12/04/2025", "12/04/2028", m=["Leptospirosis"]),
+                  ev("Canine Lepto 1yr Vaccine", None, "12/04/2026", m=["Leptospirosis"])], ["Leptospirosis"])
+    v = pet.vaccinations[0]
+    assert (v.expirationDate, v.needsHumanReview) == ("2026-12-04", True)
+
+
+def test_ocr_spelling_of_the_quoted_word_is_tolerated():
+    pet, _ = run([ev("Oral Bordetella Annual", "07-31-26", "07-31-27", m=[{"name": "Bordetella",
+                                                                         "shown_by": "Bordatella Vaccine"}])],
+                 ["Bordetella"])
+    assert pet.vaccinations[0].expirationDate == "2027-07-31"

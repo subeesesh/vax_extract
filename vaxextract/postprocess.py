@@ -8,6 +8,7 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
+from difflib import SequenceMatcher
 from typing import Optional
 
 from . import dates as D
@@ -128,6 +129,16 @@ def _shown(name: str, quote: Optional[str]) -> bool:
         if short and not _abbreviation(name, at[k]):
             continue
         return True
+    if short:
+        return False
+    # OCR spells the same word differently in two places ('Bordatella Vaccine' quoted for 'Oral Bordetella Annual'):
+    # the quote's longest word, spelled nearly the same, printed in the name and not negated
+    key = max(re.findall(r"[a-z0-9]+", (quote or "").lower()), key=len, default="")
+    if len(key) < 5:
+        return False
+    for m in re.finditer(r"[A-Za-z0-9]+", name):
+        if SequenceMatcher(None, key, m.group().lower()).ratio() >= 0.8 and not _NEGATED.search(name[:m.start()]):
+            return True
     return False
 
 
@@ -138,6 +149,8 @@ def _abbreviation(name: str, i: int) -> bool:
     word = (word[0][::-1] if word and name[:i] and name[i - 1].isalnum() else "") + re.match(r"\w*", name[i:]).group()
     if _INTERVAL.fullmatch(word):  # '3YR' is an interval, not an abbreviation
         return False
+    if any(c.isdigit() for c in word) and any(c.isalpha() for c in word):  # 'Da2pl', 'DA2PP', 'cpv2'
+        return True
     letters = [c for c in word if c.isalpha()]
     if sum(c.isupper() for c in letters) >= 2 or letters == [name[i]] and name[i].isupper():  # or 'L' of 'DA2PP+L'
         return True
@@ -216,13 +229,21 @@ def _build_pet(rp: RawPet, order: str, today: date, targets: list[str], lines: l
         kind = (e.kind or "vaccine").strip().lower()
         if not name or kind == "other" or _NOT_GIVEN.search(name):
             continue
-        g, r1 = _pdate(e.given_date, order)
-        d, r2 = _pdate(e.due_date, order)
+        given_s, due_s = e.given_date, e.due_date
+        if given_s and not due_s and D.MONTH_ONLY.fullmatch(given_s.strip()):
+            given_s, due_s = None, given_s  # a dose is dated to the day: a month-only date ('11-24') is a reminder
+        g, r1 = _pdate(given_s, order)
+        d, r2 = _pdate(due_s, order)
         reasons = r1 + r2
         if not any(c.isalpha() for c in name):
             reasons.append("name is not a vaccine name (looks like a date or number)")
         evidence = _clean(e.evidence) or _find_line(name, lines)
         if g and g > today + timedelta(days=1) and due_list:
+            d, g = g, None
+        elif g and g > today + timedelta(days=1) and d is None and g <= today + timedelta(days=366):
+            # the row's only date is less than a year ahead: a due date in an empty 'Given' cell's place (Xena:
+            # 'Rabies Vaccination | 11/26/2026' under DATE GIVEN | DATE DUE). Used as the due date; a person checks
+            reasons.append(f"only date {g.isoformat()} is in the future: read as the due date")
             d, g = g, None
         elif g and g > today + timedelta(days=1):
             # often a next-due date printed in a 'vaccinations done' list, but just as often an OCR misread
@@ -346,6 +367,7 @@ def _join_due(evs: list[_Ev], key=lambda e: e.target) -> list[_Ev]:
             fits = implied is None or abs((d.due - implied).days) <= 31
             if latest and latest.due is None and d.due > latest.given and fits:
                 latest.due, latest.due_src = d.due, "document"
+                latest.reasons += [r for r in d.reasons if r not in latest.reasons]  # a doubt about the date goes with it
                 latest.evidence = " || ".join(dict.fromkeys(x for x in (latest.evidence, d.evidence) if x))[:400] or None
             elif latest and latest.due == d.due:
                 continue
@@ -462,6 +484,16 @@ def _rollup(target: str, evs: list[_Ev], today: date) -> Vaccination:
     dated = [e for e in chosen if e.due]
     head = min(dated, key=lambda e: (e.due, e.due_src != "document")) if dated else _latest(chosen)[0]
     extra = []
+    # a reminder still in force that falls due before the latest dose's expiry (Leo: 'Canine Lepto 1yr Vaccine' due
+    # 12/04/2026 next to the 3-year 'Distemper+Leptospirosis (DA2PP+L)' row due 12/04/2028): the earlier date, checked
+    sooner = [e for e in cur if not e.given and e.due and head.due and today <= e.due
+              and (head.due - e.due).days > 31]  # a day or two apart is the same dose's own reminder (Gracie)
+    if sooner:
+        first = min(sooner, key=lambda e: e.due)
+        extra.append(f"reminder '{first.raw_name}' due {first.due.isoformat()} is before the expiry "
+                     f"{head.due.isoformat()} of '{head.raw_name}'")
+        chosen = [first] + chosen
+        head = first
     if head.due is None and head.given:
         # the latest row prints no due date (Kiya: a 2024 rabies tag row after the 2023 3-year vaccine): show the
         # latest row that has one, and let a person check
