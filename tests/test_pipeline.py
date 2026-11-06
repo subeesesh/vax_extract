@@ -270,6 +270,25 @@ def test_empty_answer_retried_once_without_fallback(monkeypatch):
     assert calls == ["m", "m"] and [e.rawName for e in res.data.pets[0].events] == ["Rabies Vaccine 3 Year"]
 
 
+def test_missing_pet_retried_once_and_better_answer_kept(monkeypatch):
+    # Mila/Ollie: the model sometimes leaves Mila out although her reminders are printed
+    pdf = make_pdf(["Mila McAuliffe's Reminders", "Lyme Booster | 6/4/2026", "Ollie McAuliffe's Reminders",
+                    "Lyme Vaccine | 1/6/2027"] + [f"filler {i}" for i in range(20)])
+    ollie = {"name": "Ollie", "events": [{"raw_name": "Lyme Vaccine", "due_date": "1/6/2027"}]}
+    mila = {"name": "Mila", "events": [{"raw_name": "Lyme Booster", "due_date": "6/4/2026"}]}
+    answers = [[ollie], [ollie, mila]]
+    calls = []
+
+    def fake(cfg, text, images=None, targets=None):
+        calls.append(cfg.model)
+        return RawExtraction.model_validate({"pets": answers[len(calls) - 1]}), {}
+
+    monkeypatch.setattr(llm_mod, "extract", fake)
+    res = extract_bytes(pdf, Config(primary=LlmConfig("u", "k", "m")), today=date(2026, 10, 2))
+    assert calls == ["m", "m"] and [p.name for p in res.data.pets] == ["Ollie", "Mila"]
+    assert not res.meta.needsHumanReview
+
+
 def test_no_retry_when_page_has_no_dates(monkeypatch):
     pdf = make_pdf(["Patient: Lilu", "Thank you for visiting"] + [f"filler {i}" for i in range(20)])
     calls = []

@@ -204,7 +204,14 @@ def _unrequested(printed: list[VaccinationEvent]) -> list[dict]:
     out = []
     for rows in groups.values():
         dosed = [e for e in rows if e.dateAdministered]
-        head = max(dosed, key=lambda e: e.dateAdministered) if dosed else max(rows, key=lambda e: e.dueDate or "")
+        if dosed:
+            # the same dose printed twice (invoice line + reminder row 'Last done'): the row with an expiry heads it,
+            # the earliest if they differ (a combination is current until its first part runs out)
+            last = max(e.dateAdministered for e in dosed)
+            same = [e for e in dosed if e.dateAdministered == last]
+            head = min(same, key=lambda e: (e.dueDate is None, e.dueDate or ""))
+        else:
+            head = max(rows, key=lambda e: e.dueDate or "")
         entry = {"name": head.rawName, "dateAdministered": head.dateAdministered, "expirationDate": head.dueDate}
         if head.needsHumanReview:
             entry["needsHumanReview"] = True

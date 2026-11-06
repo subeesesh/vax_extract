@@ -438,3 +438,28 @@ def test_interval_printed_in_name_used_when_model_leaves_it_out():
     assert {r["name"]: r["expirationDate"] for r in rows} == {"DAPP 3 year": "2028-06-18", "Bordetella": None}
     pet, _ = run([ev("Canine Rabies 3 Year", "05/05/2022", m=["Rabies"])], ["Rabies"])
     assert pet.vaccinations[0].expirationDate == "2025-05-05"
+
+
+def test_declined_row_is_not_a_vaccination():
+    # Sasuke: 'DECLINED: 1st Canine influenza H3N2/H3N8' on 6/19/2025 was not given
+    rows = _slim([ev("DECLINED: 1st Canine influenza H3N2/H3N8", "6/19/2025"), ev("Oral Bordetella, Annual", "6/19/2025")], [])
+    assert [r["name"] for r in rows] == ["Oral Bordetella, Annual"]
+
+
+def test_same_dose_on_invoice_and_reminder_row_keeps_the_printed_expiry():
+    # Cosmo: invoice line (no expiry) + reminder row 'Last done 03-06-26, due 03/27' share one name
+    rows = _slim([ev("Oral Bordetella Vaccine", "03-06-26"), ev("Oral Bordetella Vaccine", "03-06-26", "03/27")], [])
+    assert [(r["name"], r["dateAdministered"], r["expirationDate"]) for r in rows] == [
+        ("Oral Bordetella Vaccine", "2026-03-06", "2027-03-01")]
+
+
+def test_pet_named_in_the_document_but_missing_is_flagged():
+    # Mila/Ollie: the model sometimes returns only Ollie although the text prints "Mila McAuliffe's Reminders"
+    text = "Ollie | Simplera Otic Solution | 5/14/2026\nMila McAuliffe's Reminders\nLyme Booster | 6/4/2026\n" \
+           "Ollie McAuliffe's Reminders\nLyme Vaccine | 1/6/2027"
+    raw = RawExtraction.model_validate({"pets": [{"name": "Ollie", "events": [ev("Lyme Vaccine", None, "1/6/2027")]}]})
+    _, reasons = build_data(raw, text, TODAY, [])
+    assert any(r.startswith("pet named in the document but not extracted") and "Mila" in r for r in reasons)
+    raw = RawExtraction.model_validate({"pets": [{"name": "Ollie", "events": []}, {"name": "Mila McAuliffe", "events": []}]})
+    _, reasons = build_data(raw, text, TODAY, [])
+    assert not any("not extracted" in r for r in reasons)

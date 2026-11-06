@@ -91,6 +91,10 @@ def _due_list(rp: RawPet, order: str, today: date) -> bool:
                                    for g in dated)
 
 
+# a row whose name says the dose was not given ('DECLINED: 1st Canine influenza'): status words, not vaccine names
+_NOT_GIVEN = re.compile(r"\b(declined|refused|not given)\b", re.I)
+
+
 def _build_pet(rp: RawPet, order: str, today: date, targets: list[str], lines: list[str], seen: set):
     canon = {t.strip().lower(): t for t in targets}
     evs: list[_Ev] = []
@@ -99,7 +103,7 @@ def _build_pet(rp: RawPet, order: str, today: date, targets: list[str], lines: l
     for e in rp.events:
         name = re.sub(r"\s+", " ", e.raw_name or "").strip()  # a name wrapped over two lines is one name
         kind = (e.kind or "vaccine").strip().lower()
-        if not name or kind == "other":
+        if not name or kind == "other" or _NOT_GIVEN.search(name):
             continue
         g, r1 = _pdate(e.given_date, order)
         d, r2 = _pdate(e.due_date, order)
@@ -397,6 +401,28 @@ def _merge_surname_pets(pets: list[RawPet]) -> list[RawPet]:
     return list(out.values())
 
 
+_NAMED_PET = [re.compile(p) for p in (
+    r"Reminders\s+for:?\s+([A-Z][A-Za-z\-]+)",                         # 'Reminders for: Lillie (Weight...'
+    r"\b([A-Z][A-Za-z\-]+)(?:\s+[A-Z][A-Za-z\-]+)?'s\s+(?:Expired\s+)?Reminders",  # "Mila McAuliffe's Reminders"
+    r"(?i:\bpatient)\s*:\s*([A-Z][A-Za-z\-]+)",                          # 'PATIENT: Zoey', 'Patient: Archie'
+    r"(?i:\bpatient chart for)\s+([A-Z][A-Za-z\-]+)",                     # 'Patient Chart for Lillie'
+)]
+MISSING_PET = "pet named in the document but not extracted"
+
+
+def _missing_pets(text: str, pets: list[Pet]) -> list[str]:
+    """Pet names the document prints in a patient / reminder heading that no extracted pet carries: the model
+    sometimes leaves a whole animal out of a multi-pet document (Mila on the McAuliffe invoice, about half the runs)."""
+    have = {w.lower() for p in pets for w in re.findall(r"[A-Za-z\-]+", p.name or "")}
+    found = []
+    for rx in _NAMED_PET:
+        for m in rx.finditer(text):
+            n = m.group(1)
+            if len(n) > 1 and n.lower() not in have and n not in found:
+                found.append(n)
+    return found
+
+
 def build_data(raw: RawExtraction, text: str, today: Optional[date] = None, targets: Optional[list[str]] = None):
     """RawExtraction + OCR text + requested vaccine names -> (Data, review_reasons)."""
     today = today or date.today()
@@ -422,6 +448,9 @@ def build_data(raw: RawExtraction, text: str, today: Optional[date] = None, targ
         flagged = sum(v.needsHumanReview for v in p.events)
         if flagged:
             reasons.append(f"{flagged} vaccination event(s) flagged")
+    gone = _missing_pets(text, pets) if pets else []
+    if gone:
+        reasons.append(f"{MISSING_PET}: " + ", ".join(gone))
     missed = _coverage_warnings(text, seen, order, targets)
     if missed:
         reasons.append(f"possible missed events ({len(missed)}): " + " ; ".join(missed[:3]))
