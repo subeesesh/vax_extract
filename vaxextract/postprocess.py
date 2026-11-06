@@ -200,6 +200,11 @@ def _diseases(expansion: dict, target: str, species: set) -> list[list[str]]:
     return [d for d in out if d]
 
 
+def _own_words(target: str) -> set:
+    """The words of a requested combination's name that name it alone ('dhlpp', 'fvrcp' of 'DHLPP / FVRCP')."""
+    return {w.lower() for w in re.findall(r"[A-Za-z0-9]+", target) if len(w) >= 4}
+
+
 def _parts_of(expansion: dict, targets: list[str], species: set) -> dict:
     """For each requested name B, the requested combination names A that contain every disease of B (Leptospirosis
     -> DHLPP / FVRCP for a dog): a row of B is also a part of A. From the name definitions the LLM wrote for this
@@ -280,6 +285,13 @@ def _build_pet(rp: RawPet, order: str, today: date, targets: list[str], lines: l
             for a in parts_of.get(b, []):
                 if a not in matches:
                     matches[a] = m.model_copy(update={"partial": True})
+        # a row printing the requested combination's own name ('DHLPP Vaccination' for 'DHLPP / FVRCP') is the whole
+        # combination: it also covers the requested Leptospirosis. The model's partial=False is not enough ('DHPP')
+        printed = {w.lower() for w in re.findall(r"[A-Za-z0-9]+", name)}
+        for b, owners in parts_of.items():
+            a = next((a for a in owners if a in matches and printed & _own_words(a)), None)
+            if a and b not in matches:
+                matches[b] = matches[a].model_copy(update={"partial": False})
         if unknown:
             reasons.append("matched names not in the request: " + ", ".join(unknown))
         if not matches:
@@ -295,7 +307,26 @@ def _build_pet(rp: RawPet, order: str, today: date, targets: list[str], lines: l
                 seen.add((t, g))
             if d:
                 seen.add((t, d))
+    for ev in evs:  # only the latest dose of each name: an older row repeating the series' next reminder is history
+        if not any(o.given and ev.given and o.given > ev.given
+                   and (o.target == ev.target if ev.target else o.raw_name.lower() == ev.raw_name.lower())
+                   for o in evs):
+            _fit_interval(ev)
     return _finalize(rp, evs, _join_due_tests(list(diags.values())), targets, today)
+
+
+def _fit_interval(e: _Ev) -> None:
+    """A printed row with its interval in the name ('Canine Rabies Vac 1yr') and a due date well past it: the date is
+    something else (a lot's 'Expires: 08/13/27' read as the due date). The interval's date; a person checks.
+    Checked per printed row, before rows of one day are merged (a merged row mixes one part's interval with another
+    part's date)."""
+    if not (e.given and e.due and e.months):
+        return
+    implied = D.add_months(e.given, e.months)
+    if (e.due - implied).days > 31:  # an earlier printed date (one part of a combination, a first dose) stands
+        e.reasons.append(f"printed due {e.due.isoformat()} is later than the {e.months}-month interval allows "
+                         f"(given {e.given.isoformat()} -> {implied.isoformat()})")
+        e.due, e.due_src = implied, "derived"
 
 
 def _join_due_tests(tests: list[DiagnosticTest]) -> list[DiagnosticTest]:

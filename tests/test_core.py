@@ -756,3 +756,33 @@ def test_document_that_is_not_a_vaccine_record_gives_no_dates():
     data, reasons = build_data(raw, "", TODAY, ["DHLPP / FVRCP"])
     v = data.pets[0].vaccinations[0]
     assert v.expirationDate is None and not v.matchedComponents and "not a vaccine record" in reasons
+
+
+# ---------------- held-out fixes: interval vs lot expiry; a whole combination row covers its parts ----------------
+def test_lot_expiry_read_as_due_does_not_beat_the_printed_interval():
+    # Rascal chart: 'Canine Rabies Vac 1yr' given 05-20-26, lot line 'Expires: 08/13/27' read as the due date
+    pet, _ = run([ev("Canine Rabies Vac 1yr, #246335", "05-20-26", "08/13/27", m=[("Rabies", 12)], dur=12, iv="1yr")],
+                 ["Rabies"])
+    v = pet.vaccinations[0]
+    assert v.expirationDate == "2027-05-20" and v.needsHumanReview
+    # an earlier printed date stands (one part of a combination printed per part, a first dose), no flag
+    pet, _ = run([ev("DA2PPV- 3 year w/ Lepto", "03-09-26", "03-09-27", m=[("Rabies", 36)], dur=36, iv="3 year")],
+                 ["Rabies"])
+    assert (pet.vaccinations[0].expirationDate, pet.vaccinations[0].needsHumanReview) == ("2027-03-09", False)
+    # an older dose repeating the series' next reminder is history: not flagged
+    pet, _ = run([ev("Lepto 1 YR BOOSTER", "10-24-25", "07-31-27", m=[("Rabies", 12)], dur=12, iv="1 YR"),
+                  ev("Lepto 1 YR BOOSTER", "07-31-26", "07-31-27", m=[("Rabies", 12)], dur=12, iv="1 YR")], ["Rabies"])
+    assert (pet.vaccinations[0].expirationDate, pet.vaccinations[0].needsHumanReview) == ("2027-07-31", False)
+
+
+def test_row_printing_the_combination_name_covers_the_requested_part():
+    # Homer: 'DHLPP Vaccination' matched only to DHLPP / FVRCP; Leptospirosis is requested too
+    v = run4([ev("DHLPP Vaccination", "05-27-26", "05-27-27", m=[{"name": "DHLPP / FVRCP", "partial": False}])])
+    assert v["Leptospirosis"].expirationDate == "2027-05-27"
+    # the model's partial=False on a DHPP / Distemper row is not enough (Cosmo, Benito)
+    for name in ("DHPP 1 YR BOOSTER", "Distemper Annual Vacc", "Nobivac Canine DAPPv 1"):
+        v = run4([ev(name, "05-27-26", "05-27-27", m=[{"name": "DHLPP / FVRCP", "partial": False}])])
+        assert not v["Leptospirosis"].matchedComponents, name
+    # a cat's FVRCP never covers Leptospirosis
+    v = run4([ev("FVRCP", "05-27-26", "05-27-27", m=[{"name": "DHLPP / FVRCP", "partial": False}])], "Feline")
+    assert not v["Leptospirosis"].matchedComponents
