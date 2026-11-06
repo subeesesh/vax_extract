@@ -43,6 +43,7 @@ class RawEvent(_Lenient):
     kind: Optional[str] = None
     given_date: Optional[str] = None
     due_date: Optional[str] = None
+    interval_text: Optional[str] = None  # the words of raw_name that print the interval ('3 Yr', 'Annual')
     duration_months: Optional[int] = None
     evidence: Optional[str] = None
     matches: list[RawMatch] = Field(default_factory=list)

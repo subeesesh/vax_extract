@@ -52,7 +52,7 @@ def output_schema(targets: Optional[list[str]] = None) -> dict:
 
     match = obj({"name": name, "partial": {"type": "boolean"}, "duration_months": i})
     event = obj({"raw_name": {"type": "string"}, "kind": {"type": "string", "enum": ["vaccine", "diagnostic", "other"]},
-                 "given_date": s, "due_date": s, "duration_months": i,
+                 "given_date": s, "due_date": s, "interval_text": s, "duration_months": i,
                  "matches": {"type": "array", "items": match, **({} if targets else {"maxItems": 0})}})
     pet = obj({**{k: s for k in ("name", "species", "breed", "sex", "weight", "color", "microchipNumber")},
                "events": {"type": "array", "items": event}})

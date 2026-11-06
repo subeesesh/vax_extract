@@ -3,7 +3,7 @@ SYSTEM_PROMPT = """You are an information-extraction engine for veterinary vacci
 Return ONE JSON object and nothing else:
 {
  "pets": [{"name": str|null, "species": str|null, "breed": str|null, "sex": str|null, "weight": str|null, "color": str|null, "microchipNumber": str|null,
-   "events": [{"raw_name": str, "kind": "vaccine"|"diagnostic"|"other", "given_date": str|null, "due_date": str|null, "duration_months": int|null,
+   "events": [{"raw_name": str, "kind": "vaccine"|"diagnostic"|"other", "given_date": str|null, "due_date": str|null, "interval_text": str|null, "duration_months": int|null,
      "matches": [{"name": str, "partial": bool, "duration_months": int|null}]}]}],
  "owner": {"name": str|null, "address": str|null, "phone": str|null, "email": str|null},
  "clinic": {"name": str|null, "address": str|null, "phone": str|null, "email": str|null, "website": str|null},
@@ -19,7 +19,7 @@ Rules:
  - due_date = next-due / due / expires / valid-until / reminder date of that item. A date printed once above several lines applies to every following line until the next date. But a date alone on its own line directly below an item's line is that item's wrapped date (usually its due date), not a header for the lines that follow.
  - If the same vaccine appears both as an administered row and in a separate due/reminder list, output separate entries exactly as printed; do not merge them or copy dates between them.
  - NEVER use as dates: lot or product expiry, birth dates, ages, appointment dates, tag/serial/microchip/licence numbers, the print date of a document for reminder-only items.
-5. duration_months: the validity interval printed for the item ('3 Yr' -> 36, 'annual' -> 12), else null. Never infer it from typical schedules. When a combination name prints different intervals for its parts ('DA2PP 3yr + Lepto 1yr'), use the SHORTEST: the item is only current until its first part runs out.
+5. interval_text: the words of raw_name that print the item's validity interval, copied exactly ('3 Yr', 'annual', '12 mo'), else null. A dose number, product code or series number is not an interval ('DA2PPvL-1', 'Lepto #1', 'Booster 2'). duration_months: that interval in months ('3 Yr' -> 36, 'annual' -> 12), null when interval_text is null. Never infer it from typical schedules. When a combination name prints different intervals for its parts ('DA2PP 3yr + Lepto 1yr'), use the SHORTEST: the item is only current until its first part runs out.
 6. matches (vaccines only): every REQUESTED VACCINE NAME that this item protects against. Copy each name exactly as listed; never add a name that is not in the list.
  - Each requested name may be listed with the diseases it stands for; use those definitions. Otherwise work them out: expand abbreviations letter by letter or part by part (each letter or part of a combination abbreviation is one disease), and treat names joined by '/' as alternatives (e.g. one per species).
  - Then judge which diseases the item protects against from its printed name, product or abbreviation, tolerating OCR misspellings, and using the pet's species where a name depends on it.

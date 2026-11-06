@@ -10,12 +10,13 @@ TODAY = date(2026, 10, 2)
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def ev(name, g=None, d=None, kind="vaccine", m=(), dur=None):
-    """m: requested names the (fake) LLM matched; a tuple (name, months) carries a per-component interval."""
+def ev(name, g=None, d=None, kind="vaccine", m=(), dur=None, iv=None):
+    """m: requested names the (fake) LLM matched; a tuple (name, months) carries a per-component interval.
+    iv: the interval words the LLM quotes from the name ('annual')."""
     matches = [{"name": x[0], "duration_months": x[1]} if isinstance(x, tuple) else x if isinstance(x, dict)
                else {"name": x} for x in m]
-    return {"raw_name": name, "kind": kind, "given_date": g, "due_date": d, "duration_months": dur,
-            "evidence": name, "matches": matches}
+    return {"raw_name": name, "kind": kind, "given_date": g, "due_date": d, "interval_text": iv,
+            "duration_months": dur, "evidence": name, "matches": matches}
 
 
 def run(pet_events, targets, text=""):
@@ -97,7 +98,7 @@ def test_rubi_gold():
         ev("Rabies Vaccination", "02-19-26", m=["Rabies"]),
         ev("Bordetella - with other vaccines", "02-19-26", m=["Bordetella"]),
         ev("DA2/PV/Rabies(3yr)Lepto(1yr), #64162961", "02-19-26", m=["DHPP", ("Rabies", 36), ("Lepto", 12)]),
-        ev("Bordetella/Lepto - annual vaccine", "02-11-25", m=["Bordetella", "Lepto"], dur=12),
+        ev("Bordetella/Lepto - annual vaccine", "02-11-25", m=["Bordetella", "Lepto"], dur=12, iv="annual"),
         ev("DA2/PV/Lepto/Rabies(1yr) - 16 wk", "03-24-22", m=["DHPP", "Lepto", ("Rabies", 12)]),
         ev("DA2/PV/Lepto/Bordetella - 12 wk", "02-10-22", m=["DHPP", "Lepto", "Bordetella"]),
         ev("DA2/PV - 8 wk", "01-10-22", m=["DHPP"]),
@@ -283,11 +284,75 @@ def test_output_one_entry_per_requested_name():
 
 
 def test_combination_row_gets_earliest_component_expiry():
-    rows = _slim([ev("DHPP-L", "2026-02-01", m=[("DHLPP / FVRCP", 36), ("Leptospirosis", 12)])],
+    rows = _slim([ev("DHPP 3yr-L 1yr", "2026-02-01", m=[("DHLPP / FVRCP", 36), ("Leptospirosis", 12)])],
                  ["DHLPP / FVRCP", "Leptospirosis"])
     assert [(r["name"], r["expirationDate"]) for r in rows] == [("DHLPP / FVRCP", "2029-02-01"),
                                                                ("Leptospirosis", "2027-02-01")]
-    assert rows[0]["matchedComponents"] == [{"name": "DHPP-L", "dateAdministered": "2026-02-01"}]  # nothing printed
+    assert rows[0]["matchedComponents"] == [{"name": "DHPP 3yr-L 1yr", "dateAdministered": "2026-02-01"}]
+
+
+def test_empty_expiry_goes_to_review():
+    # Maximus (62959cb7): an invoice prints 'TruCan Bordetella (Intranasal)' with no due date and no interval
+    pet, _ = run([ev("TruCan Bordetella (Intranasal)", "02/06/2026", m=["Bordetella"]),
+                  ev("Elanco 3yr Rabies Vaccine", "02/06/2026", m=["Rabies"], dur=36, iv="3yr")],
+                 ["Bordetella", "Rabies", "Leptospirosis"])
+    bord, rab, lepto = pet.vaccinations
+    assert (bord.expirationDate, bord.needsHumanReview) == (None, True)
+    assert "no expiry printed for Bordetella" in bord.reviewReasons
+    assert (rab.expirationDate, rab.needsHumanReview) == ("2029-02-06", False)  # derived from a printed '3yr'
+    assert (lepto.expirationDate, lepto.needsHumanReview) == (None, False)  # not on the document: nothing to review
+
+
+def test_interval_read_from_a_code_is_not_used():
+    # Apollo (58a66256): 'Canine DA2PPvL-1' prints no interval; the model read '-1' as one year
+    pet, _ = run([ev("Canine DA2PPvL-1", "07-27-26", m=["DHLPP / FVRCP"], dur=12, iv="-1"),
+                  ev("Canine Bordetella Oral - Annual", "07-27-26", m=["Bordetella"], dur=12, iv="Annual"),
+                  ev("Canine Rabies 1 Year", "07-27-26", m=["Rabies"], dur=12)],
+                 ["DHLPP / FVRCP", "Bordetella", "Rabies"])
+    dhlpp, bord, rab = pet.vaccinations
+    assert (dhlpp.expirationDate, dhlpp.needsHumanReview) == (None, True)
+    assert "no expiry printed for DHLPP / FVRCP" in dhlpp.reviewReasons
+    assert (bord.expirationDate, bord.expirationDateSource) == ("2027-07-27", "derived")  # 'Annual' is printed
+    assert (rab.expirationDate, rab.expirationDateSource) == ("2027-07-27", "derived")  # '1 Year' is printed
+
+
+def test_expired_part_goes_to_review():
+    # Calla: Lepto (part of DHLPP) expired before today, DA2PP still valid -> DA2PP's date, sent to review.
+    # Last cycle's DA2PP dose has expired too, but it is the same product: plain history, no flag.
+    pet, _ = run([ev("Canine DA2PP 3 year", "11-28-25", "11-01-28", m=[{"name": "DHLPP / FVRCP", "partial": True}]),
+                  ev("Canine DA2PP 3 year", "11-01-22", "11-01-25", m=[{"name": "DHLPP / FVRCP", "partial": True}]),
+                  ev("Canine Leptospirosis 1 year", "09-01-25", "09-01-26",
+                     m=[{"name": "DHLPP / FVRCP", "partial": True}, "Leptospirosis"])],
+                 ["DHLPP / FVRCP", "Leptospirosis"])
+    dhlpp, lepto = pet.vaccinations
+    assert dhlpp.expirationDate == "2028-11-01" and dhlpp.needsHumanReview
+    assert [r for r in dhlpp.reviewReasons if r.startswith("part expired")] == [
+        "part expired: 'Canine Leptospirosis 1 year' due 2026-09-01"]
+    assert lepto.expirationDate == "2026-09-01"  # its own (expired) date; a single vaccine, not a part
+
+
+def test_older_doses_of_a_part_are_history():
+    # Onyx (2301c002): yearly 'Leptospirosis' doses; the model linked the old ones to DHLPP but not this year's
+    lepto = lambda g, d, both: ev("Leptospirosis", g, d, m=[{"name": "DHLPP / FVRCP", "partial": True}, "Leptospirosis"]
+                                  if both else ["Leptospirosis"])
+    pet, _ = run([ev("DAPP", "03-05-26", "03-05-27", m=[{"name": "DHLPP / FVRCP", "partial": True}]),
+                  lepto("03-05-26", "03-05-27", False), lepto("02-15-24", "02-15-25", True),
+                  lepto("03-21-22", "03-21-23", True)], ["DHLPP / FVRCP", "Leptospirosis"])
+    assert not [r for r in pet.vaccinations[0].reviewReasons if r.startswith("part expired")]
+
+
+def test_interval_needs_a_printed_unit():
+    # Kairo: 'Lepto 1' and a product code quoted as the interval: no unit printed -> not used
+    for name, quoted in (("Recombitek Lepto 1", "Lepto 1"), ("Canine DA2PPvL-1", "DA2PPvL-1")):
+        pet, _ = run([ev(name, "05-29-25", m=["Leptospirosis"], dur=12, iv=quoted)], ["Leptospirosis"])
+        assert (pet.vaccinations[0].expirationDate, pet.vaccinations[0].needsHumanReview) == (None, True), name
+    # a quoted '(3 year)' given as 12 months: the model's 12 is dropped. Matched to two names, nothing is left
+    # (review); matched to one, the printed 3 years is used
+    two, _ = run([ev("Recombitek Da2pp (3 year) + Lepto 1", "05-29-25", m=["DHLPP / FVRCP", "Leptospirosis"],
+                     dur=12, iv="(3 year)")], ["DHLPP / FVRCP", "Leptospirosis"])
+    assert [(v.expirationDate, v.needsHumanReview) for v in two.vaccinations] == [(None, True), (None, True)]
+    one, _ = run([ev("Rabies (3 year)", "05-29-25", m=["Rabies"], dur=12, iv="(3 year)")], ["Rabies"])
+    assert one.vaccinations[0].expirationDate == "2028-05-29"
 
 
 def test_reminder_of_other_product_not_joined():

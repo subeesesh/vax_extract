@@ -70,6 +70,26 @@ def _printed_months(name: str) -> set[int]:
     return {m for m in found if _months(m)}
 
 
+def _llm_months(e, name: str, value: Optional[int]) -> Optional[int]:
+    """The model's interval, kept only when the name prints it: as a number and unit ('3yr', '12 mo') or as the words
+    the model quotes in interval_text ('Annual'). A number read out of a code or dose number ('DA2PPvL-1') is dropped,
+    so no expiry is derived from it and the empty expiry goes to review instead."""
+    v = _months(value)
+    if not v:
+        return None
+    if v in _printed_months(name):
+        return v
+    quoted = (e.interval_text or "").strip()
+    printed = re.sub(r"\s+", "", quoted).lower() in re.sub(r"\s+", "", name).lower()
+    if not (quoted and printed and _UNIT.search(quoted)):
+        return None
+    stated = _printed_months(quoted)  # a quoted '3 year' must mean 36: Kairo's '(3 year)' quoted for a 12
+    return v if not stated or v in stated else None
+
+
+_UNIT = re.compile(r"(annual|yearly|years?|yrs?|months?|mos?|weeks?|wks?)\b", re.I)  # time units, as in _INTERVAL
+
+
 def _item_months(name: str, llm_months: Optional[int]) -> Optional[int]:
     """The validity interval of a whole printed item (no requested name to split it by): the interval printed in its
     name wins over the model's (which it sometimes leaves out); a combination printing different intervals for its
@@ -145,12 +165,12 @@ def _build_pet(rp: RawPet, order: str, today: date, targets: list[str], lines: l
         if unknown:
             reasons.append("matched names not in the request: " + ", ".join(unknown))
         if not matches:
-            evs.append(_Ev(name, None, False, g, d, evidence, _item_months(name, e.duration_months),
+            evs.append(_Ev(name, None, False, g, d, evidence, _item_months(name, _llm_months(e, name, e.duration_months)),
                            "document" if d else None, reasons))
             continue
         for t, m in matches.items():
             evs.append(_Ev(name, t, m.partial, g, d, evidence,
-                           _months(m.duration_months) or _months(e.duration_months)
+                           _llm_months(e, name, m.duration_months) or _llm_months(e, name, e.duration_months)
                            or (_single(_printed_months(name)) if len(matches) == 1 else None),
                            "document" if d else None, list(reasons)))
             if g:
@@ -268,6 +288,28 @@ def _latest(rows: list[_Ev]) -> list[_Ev]:
     return [e for e in due if e.due == max(x.due for x in due)] if due else rows
 
 
+def _expired_parts(mine: list[_Ev], cur: list[_Ev], evs: list[_Ev], today: date) -> list[str]:
+    """Expired parts of a combination that `_current` dropped while another part is still valid (Lepto due
+    2026-10-09 next to DA2PP due 2027): the roll-up then shows the valid part's date, which is right by the rules,
+    but the expired part needs a person. A row's coverage = every requested name its printed line matches; an
+    expired row with the same coverage as a row still in force is just an older dose and stays history."""
+    def cover(e: _Ev) -> frozenset:
+        return frozenset(x.target for x in evs if x.target and x.raw_name.lower() == e.raw_name.lower())
+
+    def redosed(e: _Ev) -> bool:  # a later dose of the same printed name exists anywhere on the document (Onyx)
+        return any(x.raw_name.lower() == e.raw_name.lower() and x.given and e.given and x.given > e.given for x in evs)
+
+    in_force = {cover(c) for c in cur}
+    out = []
+    for e in mine:
+        if (e.partial and e.due and e.due < today and not any(e is c for c in cur)
+                and not redosed(e) and cover(e) not in in_force):
+            r = f"part expired: '{e.raw_name}' due {e.due.isoformat()}"
+            if r not in out:
+                out.append(r)
+    return out
+
+
 def _rollup(target: str, evs: list[_Ev], today: date) -> Vaccination:
     """One requested name: the latest record of the rows that cover it fully, and next to it every part of a
     combination still in force; the one that expires first wins (a combination is only as current as its
@@ -288,6 +330,9 @@ def _rollup(target: str, evs: list[_Ev], today: date) -> Vaccination:
     # every row in force covers only part of the name and they are all one product: the rest is not on the document
     if all(e.partial for e in cur) and len({n.lower() for e in cur for n in [e.raw_name, *e.also]}) == 1:
         reasons.append(f"combination not complete: only '{cur[0].raw_name}' is printed for {target}")
+    if head.due is None:  # printed rows match the name but none gives or implies an expiry: a person has to look
+        reasons.append(f"no expiry printed for {target}")
+    reasons += _expired_parts(mine, cur, evs, today)
     return Vaccination(
         name=target,
         partialMatch=all(e.partial for e in cur),
