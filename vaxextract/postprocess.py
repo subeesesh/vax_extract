@@ -30,6 +30,7 @@ class _Ev:
     due_src: Optional[str] = None
     reasons: list = field(default_factory=list)
     also: list = field(default_factory=list)  # other raw names merged into this event
+    part: int = 0  # one row printing an interval per part ('Da2pp (3 year) + Lepto (1 year)'): which part
 
 
 def _pdate(s: Optional[str], order: str):
@@ -300,11 +301,20 @@ def _build_pet(rp: RawPet, order: str, today: date, targets: list[str], lines: l
             evs.append(_Ev(name, None, False, g, d, evidence, _item_months(name, _llm_months(e, name, e.duration_months)),
                            "document" if d else None, reasons))
             continue
+        printed_m = _printed_months(name)
+        combos = {a for owners in parts_of.values() for a in owners}
         for t, m in matches.items():
-            evs.append(_Ev(name, t, m.partial, g, d, evidence,
-                           _llm_months(e, name, m.duration_months) or _llm_months(e, name, e.duration_months)
-                           or (_single(_printed_months(name)) if len(matches) == 1 else None),
-                           "document" if d else None, list(reasons)))
+            if t in combos and len(printed_m) > 1 and d is None:
+                # a combination row printing an interval per part ('DA2P-Pv 3yr 4L 1yr', 'Da2pp (3 year) + Lepto
+                # (1 year)') and no due date: one event per part, so the first-expiring part sets the date and a
+                # later dose of one part (Lepto 4 the next year) renews only that part
+                for i, mo in enumerate(sorted(printed_m)):
+                    evs.append(_Ev(name, t, m.partial, g, d, evidence, mo, None, list(reasons), part=i))
+            else:
+                evs.append(_Ev(name, t, m.partial, g, d, evidence,
+                               _llm_months(e, name, m.duration_months) or _llm_months(e, name, e.duration_months)
+                               or (_single(printed_m) if len(matches) == 1 else None),
+                               "document" if d else None, list(reasons)))
             if g:
                 seen.add((t, g))
             if d:
@@ -338,9 +348,12 @@ def _merge_dups(evs: list[_Ev]) -> list[_Ev]:
     for e in evs:
         undated = e.given is None and e.due is None  # never merge rows just because both lack dates
         key = (e.target, e.given, None if e.given else e.due,
-               e.raw_name.lower() if e.target is None or undated else "")
+               e.raw_name.lower() if e.target is None or undated else "", e.part)
         k = out.get(key)
-        if k is not None and e.due and k.due and e.due != k.due and _cover(e, evs) != _cover(k, evs):
+        apart = k is not None and ((e.due and k.due and e.due != k.due) or (
+            # no due printed, different intervals: 'DAPP, Triannual, 3 years' and 'Lepto, Annual, 1 year' (2_expiry)
+            not e.due and not k.due and e.months and k.months and e.months != k.months))
+        if apart and _cover(e, evs) != _cover(k, evs):
             key = key + (len(out),)  # another part given the same day
             k = None
         if k is None:
@@ -464,25 +477,30 @@ def _dose_or_part(cur: list[_Ev], evs: list[_Ev]) -> list[str]:
     return out
 
 
-def _expired_parts(mine: list[_Ev], cur: list[_Ev], evs: list[_Ev], today: date) -> list[str]:
+def _expired_parts(mine: list[_Ev], cur: list[_Ev], evs: list[_Ev], today: date) -> list[_Ev]:
     """Expired parts of a combination that `_current` dropped while another part is still valid (Lepto due
-    2026-10-09 next to DA2PP due 2027): the roll-up then shows the valid part's date, which is right by the rules,
-    but the expired part needs a person. A row's coverage = every requested name its printed line matches; an
+    2026-10-09 next to DA2PP due 2027): the combination takes the earliest date, the expired part's, and a person
+    checks. A row's coverage = every requested name its printed line matches; an
     expired row with the same coverage as a row still in force is just an older dose and stays history."""
     cover = lambda e: _cover(e, evs)  # noqa: E731
 
-    def redosed(e: _Ev) -> bool:  # a later dose of the same printed name exists anywhere on the document (Onyx)
-        return any(x.raw_name.lower() == e.raw_name.lower() and x.given and e.given and x.given > e.given for x in evs)
+    def redosed(e: _Ev) -> bool:
+        # a later dose of the same printed name exists anywhere on the document (Onyx), or a later row of this name
+        # covers the same part (Rubi: 2025 'Bordetella/Lepto', then 2026 'DA2/PV/Rabies(3yr)Lepto(1yr)')
+        if not e.given:
+            return False
+        same = cover(e) - {e.target}
+        return any(x.given and x.given > e.given and (x.raw_name.lower() == e.raw_name.lower()
+                                                      or (x.target == e.target and same & cover(x))) for x in evs)
 
     in_force = {cover(c) for c in cur}
-    out = []
+    out: list[_Ev] = []
     for e in mine:
         if (e.partial and e.due and e.due < today and not any(e is c for c in cur)
                 and not redosed(e) and cover(e) not in in_force):
-            r = f"part expired: '{e.raw_name}' due {e.due.isoformat()}"
-            if r not in out:
-                out.append(r)
-    return out
+            out.append(e)
+    # the latest dose of each expired part (an older dose of the same part is history)
+    return [e for e in out if not any(o.due > e.due and cover(o) == cover(e) for o in out)]
 
 
 def _rollup(target: str, evs: list[_Ev], today: date) -> Vaccination:
@@ -493,8 +511,10 @@ def _rollup(target: str, evs: list[_Ev], today: date) -> Vaccination:
     if not mine:
         return Vaccination(name=target)
     cur = _current(mine, today, evs)
+    valid = any(e.due and e.due >= today for e in mine)
+    expired = _expired_parts(mine, cur, evs, today) if valid else []
     full = _latest([e for e in cur if not e.partial])
-    chosen = full + [e for e in cur if e.partial] if full else cur
+    chosen = (full + [e for e in cur if e.partial] if full else cur) + expired
     dated = [e for e in chosen if e.due]
     head = min(dated, key=lambda e: (e.due, e.due_src != "document")) if dated else _latest(chosen)[0]
     extra = []
@@ -524,7 +544,6 @@ def _rollup(target: str, evs: list[_Ev], today: date) -> Vaccination:
     reasons = sorted({r for e in chosen for r in e.reasons})
     # every row in force covers only part of the name and they are all one product: the rest is not on the document.
     # When every dose has expired only the latest is in force; judge the parts on all rows, as the history shows them
-    valid = any(e.due and e.due >= today for e in mine)
     basis = cur if valid else mine
     # (also when the rows print different names but are all the one part matched to another requested name:
     # Kismet's 'Lepto Annual' and 'Lepto 1st', both Leptospirosis, and no DHPP row)
@@ -534,7 +553,8 @@ def _rollup(target: str, evs: list[_Ev], today: date) -> Vaccination:
         reasons.append(f"combination not complete: only '{basis[0].raw_name}' is printed for {target}")
     if head.due is None:  # printed rows match the name but none gives or implies an expiry: a person has to look
         reasons.append(f"no expiry printed for {target}")
-    reasons += extra + _dose_or_part(cur, evs) + (_expired_parts(mine, cur, evs, today) if valid else [])
+    reasons += extra + _dose_or_part(cur, evs) + list(dict.fromkeys(
+        f"part expired: '{e.raw_name}' due {e.due.isoformat()}" for e in expired))
     return Vaccination(
         name=target,
         partialMatch=all(e.partial for e in cur),

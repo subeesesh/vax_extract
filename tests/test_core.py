@@ -321,7 +321,7 @@ def test_interval_read_from_a_code_is_not_used():
 
 
 def test_expired_part_goes_to_review():
-    # Calla: Lepto (part of DHLPP) expired before today, DA2PP still valid -> DA2PP's date, sent to review.
+    # Calla: Lepto (part of DHLPP) expired before today, DA2PP still valid -> the earlier date (Lepto's), sent to review.
     # Last cycle's DA2PP dose has expired too, but it is the same product: plain history, no flag.
     pet, _ = run([ev("Canine DA2PP 3 year", "11-28-25", "11-01-28", m=[{"name": "DHLPP / FVRCP", "partial": True}]),
                   ev("Canine DA2PP 3 year", "11-01-22", "11-01-25", m=[{"name": "DHLPP / FVRCP", "partial": True}]),
@@ -329,7 +329,7 @@ def test_expired_part_goes_to_review():
                      m=[{"name": "DHLPP / FVRCP", "partial": True}, "Leptospirosis"])],
                  ["DHLPP / FVRCP", "Leptospirosis"])
     dhlpp, lepto = pet.vaccinations
-    assert dhlpp.expirationDate == "2028-11-01" and dhlpp.needsHumanReview
+    assert dhlpp.expirationDate == "2026-09-01" and dhlpp.needsHumanReview
     assert [r for r in dhlpp.reviewReasons if r.startswith("part expired")] == [
         "part expired: 'Canine Leptospirosis 1 year' due 2026-09-01"]
     assert lepto.expirationDate == "2026-09-01"  # its own (expired) date; a single vaccine, not a part
@@ -788,3 +788,20 @@ def test_month_only_due_takes_the_dose_day_and_output_adds_one_day():
     pet, _ = run(raw, ["Rabies"])
     assert pet.vaccinations[0].expirationDate == "2027-02-28"  # day 31 clamped to February
     assert _slim(raw, ["Rabies"])[0]["expirationDate"] == "2027-03-01"
+
+
+def test_combination_row_printing_two_intervals_takes_the_shorter():
+    # Rosie: 'DA2P-Pv 3yr 4L 1yr' given 1/21/2026, no due printed -> DHLPP is due when the Lepto part is
+    v = run4([ev("DA2P-Pv 3yr 4L 1yr Vaccine", "01-21-26", None,
+                 m=[{"name": "DHLPP / FVRCP", "partial": False, "duration_months": 36}, "Leptospirosis"], dur=36)])
+    assert v["DHLPP / FVRCP"].expirationDate == "2027-01-21"
+
+
+def test_same_day_parts_with_different_intervals_stay_apart():
+    # 2_expiry invoice: 'DAPP, Triannual, 3 years' + 'Lepto, Annual, 1 year' given the same day, no due printed
+    v = run4([ev("**DAPP, Triannual, 3 years", "2026-Jun-23", None,
+                 m=[{"name": "DHLPP / FVRCP", "partial": True, "duration_months": 36}], dur=36, iv="3 years"),
+              ev("**Lepto, Annual, 1 year", "2026-Jun-23", None,
+                 m=[{"name": "DHLPP / FVRCP", "partial": True, "duration_months": 12},
+                    {"name": "Leptospirosis", "duration_months": 12}], dur=12, iv="1 year")])
+    assert v["DHLPP / FVRCP"].expirationDate == "2027-06-23"
