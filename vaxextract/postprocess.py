@@ -239,6 +239,8 @@ def _build_pet(rp: RawPet, order: str, today: date, targets: list[str], lines: l
             given_s, due_s = None, given_s  # a dose is dated to the day: a month-only date ('11-24') is a reminder
         g, r1 = _pdate(given_s, order)
         d, r2 = _pdate(due_s, order)
+        if d and g and due_s and D.MONTH_ONLY.fullmatch(due_s.strip()):
+            d = D.with_day(d, g.day)  # a month-only due date ('03/2027') takes the dose's day; with no dose, the 1st
         reasons = r1 + r2
         if not any(c.isalpha() for c in name):
             reasons.append("name is not a vaccine name (looks like a date or number)")
@@ -307,26 +309,7 @@ def _build_pet(rp: RawPet, order: str, today: date, targets: list[str], lines: l
                 seen.add((t, g))
             if d:
                 seen.add((t, d))
-    for ev in evs:  # only the latest dose of each name: an older row repeating the series' next reminder is history
-        if not any(o.given and ev.given and o.given > ev.given
-                   and (o.target == ev.target if ev.target else o.raw_name.lower() == ev.raw_name.lower())
-                   for o in evs):
-            _fit_interval(ev)
     return _finalize(rp, evs, _join_due_tests(list(diags.values())), targets, today)
-
-
-def _fit_interval(e: _Ev) -> None:
-    """A printed row with its interval in the name ('Canine Rabies Vac 1yr') and a due date well past it: the date is
-    something else (a lot's 'Expires: 08/13/27' read as the due date). The interval's date; a person checks.
-    Checked per printed row, before rows of one day are merged (a merged row mixes one part's interval with another
-    part's date)."""
-    if not (e.given and e.due and e.months):
-        return
-    implied = D.add_months(e.given, e.months)
-    if (e.due - implied).days > 31:  # an earlier printed date (one part of a combination, a first dose) stands
-        e.reasons.append(f"printed due {e.due.isoformat()} is later than the {e.months}-month interval allows "
-                         f"(given {e.given.isoformat()} -> {implied.isoformat()})")
-        e.due, e.due_src = implied, "derived"
 
 
 def _join_due_tests(tests: list[DiagnosticTest]) -> list[DiagnosticTest]:

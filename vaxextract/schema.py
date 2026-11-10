@@ -1,6 +1,7 @@
 """Raw (LLM-facing) and final (Document-AI-compatible) data models."""
 from __future__ import annotations
 
+from datetime import date, timedelta
 from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -188,10 +189,16 @@ _PET_FIELDS = ("name", "species", "breed", "sex", "weight", "color", "microchipN
 _PARTY_FIELDS = ("name", "address", "phone", "email", "website", "licenseNumber")
 
 
+def out_expiry(iso: Optional[str]) -> Optional[str]:
+    """Expiry as the client payload gives it: the printed/derived last valid day + 1 (the kennel's convention, set by
+    the senior 2026-11-10). Internal data (Result.data) keeps the printed date."""
+    return (date.fromisoformat(iso) + timedelta(days=1)).isoformat() if iso else iso
+
+
 def _component(e: VaccinationEvent) -> dict:
     due = e.dueDate if e.dueDateSource == "document" else None  # never a date worked out from '3 Yr'
     return {"name": e.rawName, **({"dateAdministered": e.dateAdministered} if e.dateAdministered else {}),
-            **({"expirationDate": due} if due else {})}
+            **({"expirationDate": out_expiry(due)} if due else {})}
 
 
 def _newest_first(comps) -> list[dict]:
@@ -215,7 +222,7 @@ def _unrequested(printed: list[VaccinationEvent]) -> list[dict]:
             head = min(same, key=lambda e: (e.dueDate is None, e.dueDate or ""))
         else:
             head = max(rows, key=lambda e: e.dueDate or "")
-        entry = {"name": head.rawName, "dateAdministered": head.dateAdministered, "expirationDate": head.dueDate}
+        entry = {"name": head.rawName, "dateAdministered": head.dateAdministered, "expirationDate": out_expiry(head.dueDate)}
         if head.needsHumanReview:
             entry["needsHumanReview"] = True
         comps = {(e.rawName, e.dateAdministered, e.dueDate if e.dueDateSource == "document" else None): _component(e)
@@ -228,7 +235,7 @@ def _vaccination(v: Vaccination, printed: list[VaccinationEvent]) -> dict:
     """A requested name: the dates of its latest dose (expiry may be calculated), then every printed row matched to
     it, newest first, each with only the dates the document prints. Not found -> null dates, no components."""
     out = {"name": v.name, "dateAdministered": v.dateAdministered if v.matchedComponents else None,
-           "expirationDate": v.expirationDate if v.matchedComponents else None}
+           "expirationDate": out_expiry(v.expirationDate) if v.matchedComponents else None}
     if v.partialMatch:
         out["partialMatch"] = True
     if v.needsHumanReview and v.matchedComponents:

@@ -123,3 +123,9 @@ def add_months(d: date, n: int) -> date:
     idx = d.month - 1 + n
     y, m = d.year + idx // 12, idx % 12 + 1
     return date(y, m, min(d.day, calendar.monthrange(y, m)[1]))
+
+
+def with_day(d: date, day: int) -> date:
+    """d's month and year with the given day, clamped to the month's last day (31 -> 30 Apr, 28/29 Feb)."""
+    import calendar
+    return d.replace(day=min(day, calendar.monthrange(d.year, d.month)[1]))

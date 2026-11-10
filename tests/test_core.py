@@ -277,21 +277,21 @@ def test_output_one_entry_per_requested_name():
                   ev("RABIES 1 YR", "9/01/2025", "9/01/2026", m=["Rabies"]),
                   ev("Giardia", "9/22/2026", "9/22/2027")], targets)  # not requested -> not in the output
     assert rows == [
-        {"name": "DHLPP / FVRCP", "dateAdministered": "2026-09-22", "expirationDate": "2027-08-10", "partialMatch": True,
-         "matchedComponents": [{"name": "DA2P", "dateAdministered": "2026-09-22", "expirationDate": "2027-08-10"},
-                               {"name": "PARVO", "dateAdministered": "2026-09-22", "expirationDate": "2027-08-10"}]},
+        {"name": "DHLPP / FVRCP", "dateAdministered": "2026-09-22", "expirationDate": "2027-08-11", "partialMatch": True,
+         "matchedComponents": [{"name": "DA2P", "dateAdministered": "2026-09-22", "expirationDate": "2027-08-11"},
+                               {"name": "PARVO", "dateAdministered": "2026-09-22", "expirationDate": "2027-08-11"}]},
         # latest dose on top (expiry worked out from '3 YR'); components keep only printed dates, older dose too
-        {"name": "Rabies", "dateAdministered": "2026-09-22", "expirationDate": "2029-09-22",
+        {"name": "Rabies", "dateAdministered": "2026-09-22", "expirationDate": "2029-09-23",
          "matchedComponents": [{"name": "RABIES 3 YR", "dateAdministered": "2026-09-22"},
-                               {"name": "RABIES 1 YR", "dateAdministered": "2025-09-01", "expirationDate": "2026-09-01"}]},
+                               {"name": "RABIES 1 YR", "dateAdministered": "2025-09-01", "expirationDate": "2026-09-02"}]},
         {"name": "Bordetella", "dateAdministered": None, "expirationDate": None, "matchedComponents": []}]
 
 
 def test_combination_row_gets_earliest_component_expiry():
     rows = _slim([ev("DHPP 3yr-L 1yr", "2026-02-01", m=[("DHLPP / FVRCP", 36), ("Leptospirosis", 12)])],
                  ["DHLPP / FVRCP", "Leptospirosis"])
-    assert [(r["name"], r["expirationDate"]) for r in rows] == [("DHLPP / FVRCP", "2029-02-01"),
-                                                               ("Leptospirosis", "2027-02-01")]
+    assert [(r["name"], r["expirationDate"]) for r in rows] == [("DHLPP / FVRCP", "2029-02-02"),
+                                                               ("Leptospirosis", "2027-02-02")]
     assert rows[0]["matchedComponents"] == [{"name": "DHPP 3yr-L 1yr", "dateAdministered": "2026-02-01"}]
 
 
@@ -369,9 +369,9 @@ def test_reminder_of_other_product_not_joined():
     pet, _ = run(raw, targets)
     assert (pet.vaccinations[0].expirationDate, pet.vaccinations[0].needsHumanReview) == ("2026-12-10", False)
     dhlpp = _slim(raw, targets)[0]
-    assert dhlpp["expirationDate"] == "2026-12-10" and dhlpp["matchedComponents"] == [
+    assert dhlpp["expirationDate"] == "2026-12-11" and dhlpp["matchedComponents"] == [
         {"name": "DHPPV K9 Distemper Vaccine: 3 Year", "dateAdministered": "2026-09-18"},
-        {"name": "Lepto Vaccine, 1 Year", "expirationDate": "2026-12-10"}]
+        {"name": "Lepto Vaccine, 1 Year", "expirationDate": "2026-12-11"}]
 
 
 def test_reminder_row_joins_dose_with_same_printed_name():
@@ -379,7 +379,7 @@ def test_reminder_row_joins_dose_with_same_printed_name():
     rows = _slim([ev("Bordetella Oral Vaccine", "08/26/26", m=["Bordetella"]),
                   ev("Bordetella Oral Vaccine", None, "2/24/2027", m=["Bordetella"])], ["Bordetella"])
     assert rows[0]["matchedComponents"] == [
-        {"name": "Bordetella Oral Vaccine", "dateAdministered": "2026-08-26", "expirationDate": "2027-02-24"}]
+        {"name": "Bordetella Oral Vaccine", "dateAdministered": "2026-08-26", "expirationDate": "2027-02-25"}]
 
 
 def test_rollup_takes_earliest_expiry_of_same_day_rows():
@@ -454,13 +454,13 @@ def test_nothing_requested_lists_printed_vaccines():
     rows = _slim([ev("Rabies 3 Yr", "05/01/2026", dur=36), ev("Rabies 1 Yr", "04/20/2025", "04/20/2026"),
                   ev("DA2PP", "05/01/2026", "05/01/2027"), ev("DA2PP", "04/20/2025", "04/20/2026")], [])
     assert rows == [
-        {"name": "Rabies 3 Yr", "dateAdministered": "2026-05-01", "expirationDate": "2029-05-01",
+        {"name": "Rabies 3 Yr", "dateAdministered": "2026-05-01", "expirationDate": "2029-05-02",
          "matchedComponents": [{"name": "Rabies 3 Yr", "dateAdministered": "2026-05-01"}]},
-        {"name": "DA2PP", "dateAdministered": "2026-05-01", "expirationDate": "2027-05-01",
-         "matchedComponents": [{"name": "DA2PP", "dateAdministered": "2026-05-01", "expirationDate": "2027-05-01"},
-                               {"name": "DA2PP", "dateAdministered": "2025-04-20", "expirationDate": "2026-04-20"}]},
-        {"name": "Rabies 1 Yr", "dateAdministered": "2025-04-20", "expirationDate": "2026-04-20",
-         "matchedComponents": [{"name": "Rabies 1 Yr", "dateAdministered": "2025-04-20", "expirationDate": "2026-04-20"}]}]
+        {"name": "DA2PP", "dateAdministered": "2026-05-01", "expirationDate": "2027-05-02",
+         "matchedComponents": [{"name": "DA2PP", "dateAdministered": "2026-05-01", "expirationDate": "2027-05-02"},
+                               {"name": "DA2PP", "dateAdministered": "2025-04-20", "expirationDate": "2026-04-21"}]},
+        {"name": "Rabies 1 Yr", "dateAdministered": "2025-04-20", "expirationDate": "2026-04-21",
+         "matchedComponents": [{"name": "Rabies 1 Yr", "dateAdministered": "2025-04-20", "expirationDate": "2026-04-21"}]}]
 
 
 def test_combination_printing_two_intervals_expires_with_the_shorter():
@@ -468,7 +468,7 @@ def test_combination_printing_two_intervals_expires_with_the_shorter():
     rows = _slim([ev("DA2P-Pv 3yr 4L 1yr Vaccine", "1/21/2026", dur=36),
                   ev("Rabies Vaccine 3yr Canine", "1/21/2026", dur=36)], [])
     assert {r["name"]: r["expirationDate"] for r in rows} == {
-        "DA2P-Pv 3yr 4L 1yr Vaccine": "2027-01-21", "Rabies Vaccine 3yr Canine": "2029-01-21"}
+        "DA2P-Pv 3yr 4L 1yr Vaccine": "2027-01-22", "Rabies Vaccine 3yr Canine": "2029-01-22"}
 
 
 def test_owner_contact_copied_from_clinic_is_dropped():
@@ -504,7 +504,7 @@ def test_different_pets_sharing_a_first_word_are_kept_apart():
 def test_interval_printed_in_name_used_when_model_leaves_it_out():
     # Indiana: no expiry printed anywhere; the model sometimes returns no duration for 'DAPP 3 year'
     rows = _slim([ev("DAPP 3 year", "06/18/2025"), ev("Bordetella", "06/18/2025")], [])
-    assert {r["name"]: r["expirationDate"] for r in rows} == {"DAPP 3 year": "2028-06-18", "Bordetella": None}
+    assert {r["name"]: r["expirationDate"] for r in rows} == {"DAPP 3 year": "2028-06-19", "Bordetella": None}
     pet, _ = run([ev("Canine Rabies 3 Year", "05/05/2022", m=["Rabies"])], ["Rabies"])
     assert pet.vaccinations[0].expirationDate == "2025-05-05"
 
@@ -519,7 +519,7 @@ def test_same_dose_on_invoice_and_reminder_row_keeps_the_printed_expiry():
     # Cosmo: invoice line (no expiry) + reminder row 'Last done 03-06-26, due 03/27' share one name
     rows = _slim([ev("Oral Bordetella Vaccine", "03-06-26"), ev("Oral Bordetella Vaccine", "03-06-26", "03/27")], [])
     assert [(r["name"], r["dateAdministered"], r["expirationDate"]) for r in rows] == [
-        ("Oral Bordetella Vaccine", "2026-03-06", "2027-03-01")]
+        ("Oral Bordetella Vaccine", "2026-03-06", "2027-03-07")]  # 03/27 takes the dose's day, +1 in the output
 
 
 def test_pet_named_in_the_document_but_missing_is_flagged():
@@ -692,7 +692,7 @@ def test_month_only_given_date_is_a_reminder():
 def test_mixed_case_abbreviation_with_digit_shows_its_letters():
     pet, _ = run([ev("Da2pl+cpv Booster", "09-25-26", "09-27", m=[{"name": "Leptospirosis", "shown_by": "l"}])],
                  ["Leptospirosis"])
-    assert pet.vaccinations[0].expirationDate == "2027-09-01"
+    assert pet.vaccinations[0].expirationDate == "2027-09-25"  # month-only '09-27' takes the dose's day
 
 
 
@@ -759,20 +759,13 @@ def test_document_that_is_not_a_vaccine_record_gives_no_dates():
 
 
 # ---------------- held-out fixes: interval vs lot expiry; a whole combination row covers its parts ----------------
-def test_lot_expiry_read_as_due_does_not_beat_the_printed_interval():
-    # Rascal chart: 'Canine Rabies Vac 1yr' given 05-20-26, lot line 'Expires: 08/13/27' read as the due date
+def test_a_printed_due_date_is_used_as_is():
+    # the user's rule: a printed date wins; the interval is only for rows that print no due date
     pet, _ = run([ev("Canine Rabies Vac 1yr, #246335", "05-20-26", "08/13/27", m=[("Rabies", 12)], dur=12, iv="1yr")],
                  ["Rabies"])
-    v = pet.vaccinations[0]
-    assert v.expirationDate == "2027-05-20" and v.needsHumanReview
-    # an earlier printed date stands (one part of a combination printed per part, a first dose), no flag
-    pet, _ = run([ev("DA2PPV- 3 year w/ Lepto", "03-09-26", "03-09-27", m=[("Rabies", 36)], dur=36, iv="3 year")],
-                 ["Rabies"])
-    assert (pet.vaccinations[0].expirationDate, pet.vaccinations[0].needsHumanReview) == ("2027-03-09", False)
-    # an older dose repeating the series' next reminder is history: not flagged
-    pet, _ = run([ev("Lepto 1 YR BOOSTER", "10-24-25", "07-31-27", m=[("Rabies", 12)], dur=12, iv="1 YR"),
-                  ev("Lepto 1 YR BOOSTER", "07-31-26", "07-31-27", m=[("Rabies", 12)], dur=12, iv="1 YR")], ["Rabies"])
-    assert (pet.vaccinations[0].expirationDate, pet.vaccinations[0].needsHumanReview) == ("2027-07-31", False)
+    assert pet.vaccinations[0].expirationDate == "2027-08-13"
+    pet, _ = run([ev("Canine Rabies Vac 1yr", "05-20-26", None, m=[("Rabies", 12)], dur=12, iv="1yr")], ["Rabies"])
+    assert pet.vaccinations[0].expirationDate == "2027-05-20"
 
 
 def test_row_printing_the_combination_name_covers_the_requested_part():
@@ -786,3 +779,12 @@ def test_row_printing_the_combination_name_covers_the_requested_part():
     # a cat's FVRCP never covers Leptospirosis
     v = run4([ev("FVRCP", "05-27-26", "05-27-27", m=[{"name": "DHLPP / FVRCP", "partial": False}])], "Feline")
     assert not v["Leptospirosis"].matchedComponents
+
+
+def test_month_only_due_takes_the_dose_day_and_output_adds_one_day():
+    # senior's rules (2026-11-10): 'MM/YYYY' due -> the administered date's day (1st if no dose date);
+    # the client payload gives every expiry as the last valid day + 1 (the kennel's convention)
+    raw = [ev("Rabies 1 year", "01/31/2026", "02/2027", m=["Rabies"])]
+    pet, _ = run(raw, ["Rabies"])
+    assert pet.vaccinations[0].expirationDate == "2027-02-28"  # day 31 clamped to February
+    assert _slim(raw, ["Rabies"])[0]["expirationDate"] == "2027-03-01"

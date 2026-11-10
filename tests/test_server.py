@@ -71,10 +71,10 @@ def test_extract_slim_and_full(monkeypatch):
     c = TestClient(server.app)
     r = slim = c.post("/api/extract", files={"file": ("a.pdf", b"%PDF")}, data={"targets": "DHLPP / FVRCP;Rabies;Lepto"})
     assert r.json() == {"pets": [{"name": "Luna", "species": "dog", "vaccinations": [
-        {"name": "DHLPP / FVRCP", "dateAdministered": "2026-02-28", "expirationDate": "2027-02-28", "partialMatch": True,
-         "matchedComponents": [{"name": "DHPP-L", "dateAdministered": "2026-02-28", "expirationDate": "2027-02-28"}]},
+        {"name": "DHLPP / FVRCP", "dateAdministered": "2026-02-28", "expirationDate": "2027-03-01", "partialMatch": True,
+         "matchedComponents": [{"name": "DHPP-L", "dateAdministered": "2026-02-28", "expirationDate": "2027-03-01"}]},
         {"name": "Rabies", "dateAdministered": None, "expirationDate": None, "matchedComponents": []},  # not found
-        {"name": "Lepto", "dateAdministered": "2026-02-28", "expirationDate": "2029-02-28",
+        {"name": "Lepto", "dateAdministered": "2026-02-28", "expirationDate": "2029-03-01",
          "matchedComponents": [{"name": "DHPP-L", "dateAdministered": "2026-02-28"}]}]}],  # derived expiry not in component
         "clinic": {"name": "Comal Pet Hospital", "email": "staff@comalvet.com", "website": "comalvet.com"},
         "duration": 4.2, "tokenUsage": {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0}}
