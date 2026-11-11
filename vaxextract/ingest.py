@@ -131,27 +131,3 @@ def load(data: bytes, get_ocr: Callable, max_pages: int = 10, min_words: int = 1
         pages.append(Page(_ocr_rgb(rgb, get_ocr), "ocr"))
     return Document(pages, "image")
 
-
-def render_page_images(data: bytes, max_pages: int = 4, max_side: int = 1800) -> list[bytes]:
-    """PNG bytes per page, for the optional vision-fallback tier."""
-    out = []
-    if data[:5] == b"%PDF-":
-        import fitz
-
-        doc = fitz.open(stream=data, filetype="pdf")
-        for i, page in enumerate(doc):
-            if i >= max_pages:
-                break
-            out.append(page.get_pixmap(matrix=fitz.Matrix(150 / 72, 150 / 72), alpha=False).tobytes("png"))
-        return out
-    from PIL import Image, ImageOps, ImageSequence
-
-    for i, frame in enumerate(ImageSequence.Iterator(Image.open(io.BytesIO(data)))):
-        if i >= max_pages:
-            break
-        im = ImageOps.exif_transpose(frame).convert("RGB")
-        im.thumbnail((max_side, max_side))
-        buf = io.BytesIO()
-        im.save(buf, "PNG")
-        out.append(buf.getvalue())
-    return out

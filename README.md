@@ -123,7 +123,7 @@ Put the LLM settings in `.env` (see Setup below), then:
 
 ## Setup
 ```
-pip install -e ".[rapid,dev]"         # or ".[paddle,dev]" / ".[tesseract,dev]" (needs the tesseract binary)
+pip install -e ".[rapid,dev]"
 export VAX_LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/   # any OpenAI-compatible API (Gemini, vLLM, Ollama...)
 export VAX_LLM_API_KEY=...
 export VAX_LLM_MODEL=gemini-3.5-flash-lite
@@ -131,8 +131,7 @@ export VAX_LLM_REASONING_EFFORT=low     # optional; lower thinking = lower laten
 export VAX_LLM_HEDGE_SECONDS=10         # resend once if no answer after N s, first reply wins (0 = off)
 export VAX_EXPANSION_CACHE=.vax_cache/expansions.json  # cache of requested-name definitions ('' = off)
 # optional escalation tier
-export VAX_FALLBACK_MODEL=<stronger model>  VAX_FALLBACK_VISION=1   # vision=1 sends page images
-export VAX_OCR=rapid                   # rapid | paddle | tesseract
+export VAX_FALLBACK_MODEL=<stronger model>
 export VAX_DEFAULT_DATE_ORDER=MDY      # used only when a document has no unambiguous date
 export VAX_SHEET=vax_verify_failures.xlsx  # optional; every extraction updates this workbook
 ```
@@ -140,7 +139,7 @@ Instead of exporting, put the same `KEY=value` lines in `.env` in the working di
 both read it (variables already set in the shell win).
 ```
 python -m vaxextract.cli extract docs/ --out preds/ --full --targets "Bordetella;DHLPP / FVRCP;Parvo;Rabies"
-python -m vaxextract.cli eval --pred preds/ --gold gold/
+python tools/report_eval.py <kennel report .xlsx/.csv> <preds dir> --docs <document folders>   # accuracy
 pytest
 ```
 Library: `extract_file("doc.pdf", Config.from_env(), targets=["Rabies", "Bordetella"])`.
@@ -158,7 +157,7 @@ The **Layout only (no LLM)** toggle calls `POST /api/layout` instead and shows t
   output spot-checked against the images; vaccine rows and dates correct on all but one photo (a faded reminder
   list where dates and names don't line up). The model sometimes drops a printed interval ("3 Year") from a name,
   leaving no expiry, or lists an exam package as a vaccine.
-- **Accuracy (AI-checked, not yet human-verified):** 50-document sample from `tools/gold.py draft` (seed 0, targets
+- **Accuracy (AI-checked, not yet human-verified; the gold-label tooling has since been removed):** 50-document sample (seed 0, targets
   Bordetella; Canine Influenza; DHLPP / FVRCP; Parvo; Rabies), each document checked by an AI pass against its image;
   47 scored (2 unreadable photos left for a human, 1 duplicate file). Event F1 **91.8 %** strict (target + date given +
   due date; P 92.2 %, R 91.4 %), **94.5 %** on target + date given; pet names 93.6 %; 37/47 documents exactly right.
@@ -172,10 +171,9 @@ The **Layout only (no LLM)** toggle calls `POST /api/layout` instead and shows t
   (provider queueing; reasoning_effort makes no difference). Re-measure on the paid key, on AC power, with:
   `python tools/probe.py <files>` (time per LLM call + OCR/LLM split) and
   `python tools/latency_split.py <file> --models a,b` (waiting vs generating, per model).
-- **Not run here:** `PaddleEngine` / `TesseractEngine` (need the OCR packages).
-- Next steps: (1) run Document AI over a sample, human-verify -> gold labels in `gold/` (one JSON per doc with its `targets`, same
-  shape as `gold/rubi.json`); (2) tune the prompt against the eval; (3) shadow-run vs Document AI and pick
-  the escalation policy; (4) optional rule-parser tier for high-volume clean-table templates; (5) optional LoRA
-  fine-tune of a small model on verified labels; (6) perspective correction for heavily skewed phone photos.
+- **Accuracy is now measured against the kennel's own reports** with `tools/report_eval.py` (see docs/EXPIRY_RULES.md).
+- Next steps: (1) tune the prompt against the kennel-report eval; (2) shadow-run vs Document AI and pick
+  the escalation policy; (3) optional rule-parser tier for high-volume clean-table templates; (4) optional LoRA
+  fine-tune of a small model on verified labels; (5) perspective correction for heavily skewed phone photos.
 - Known limits: pet names are kept as printed (e.g. "Coco Terrasi"); mapping quality depends on the LLM (check it in
   the eval); the coverage check only fires when a requested name is printed literally on a dated line.

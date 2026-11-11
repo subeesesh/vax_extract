@@ -6,7 +6,6 @@ import os
 import sys
 from pathlib import Path
 
-from .eval import evaluate
 from .pipeline import Config, extract_file, load_dotenv
 from .sheet import update_sheet, verified_by
 
@@ -24,16 +23,8 @@ def main(argv=None) -> int:
     ex.add_argument("--targets", help="requested vaccine names to map to, separated by ';' (e.g. 'Rabies;DHLPP / FVRCP')")
     ex.add_argument("--sheet", default=os.environ.get("VAX_SHEET"),
                     help="workbook to update with one row per pet x vaccine (default: $VAX_SHEET)")
-    ex.add_argument("--full", action="store_true", help="write the full result (events, meta); needed for eval")
-    ev = sub.add_parser("eval", help="score predictions against gold labels")
-    ev.add_argument("--pred", required=True)
-    ev.add_argument("--gold", required=True)
+    ex.add_argument("--full", action="store_true", help="write the full result (events, meta)")
     a = ap.parse_args(argv)
-
-    if a.cmd == "eval":
-        r = evaluate(a.pred, a.gold)
-        print(json.dumps(r, indent=2))
-        return 0
 
     cfg = Config.from_env()
     if a.no_fallback:

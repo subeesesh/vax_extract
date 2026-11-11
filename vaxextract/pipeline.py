@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Optional
@@ -12,8 +12,8 @@ from . import dates as D
 from . import ingest, llm, ocr
 from .layout import serialize
 from .llm import LlmConfig, LlmError
-from .postprocess import build_data
-from .schema import Data, Meta, Result, TokenUsage
+from .postprocess import MISSING_PET, NOT_RECORD, build_data
+from .schema import Meta, Result, TokenUsage
 
 
 def load_dotenv(path: Path) -> None:
@@ -46,7 +46,6 @@ class Config:
                 e.get("VAX_FALLBACK_BASE_URL", primary.base_url),
                 e.get("VAX_FALLBACK_API_KEY", primary.api_key),
                 e["VAX_FALLBACK_MODEL"],
-                vision=e.get("VAX_FALLBACK_VISION", "0") == "1",
             )
         return cls(primary, fb, e.get("VAX_OCR", "rapid"))
 
@@ -61,14 +60,22 @@ def _no_events(r: Result) -> bool:
     return not any(p.events or p.diagnosticTests for p in r.data.pets)
 
 
+def _not_record(r: Result) -> bool:
+    return NOT_RECORD in r.meta.reviewReasons
+
+
+def _missing_pet(r: Result) -> bool:
+    return any(x.startswith(MISSING_PET) for x in r.meta.reviewReasons)
+
+
 def _score(r: Result):
     return (len(r.meta.reviewReasons), -sum(len(p.events) for p in r.data.pets))
 
 
-def _run(tier: str, lcfg: LlmConfig, text: str, images, today, targets, usage: TokenUsage, meta_base: dict) -> Result:
-    raw, u = llm.extract(lcfg, text, images, targets)
+def _run(tier: str, lcfg: LlmConfig, text: str, today, targets, usage: TokenUsage, meta_base: dict) -> Result:
+    raw, u = llm.extract(lcfg, text, targets)
     _usage(usage, u)
-    data, reasons = build_data(raw, text, today, targets)
+    data, reasons = build_data(raw, text, today, targets, llm.cached_expansion(lcfg, targets))
     meta = Meta(tier=tier, needsHumanReview=bool(reasons), reviewReasons=reasons, **meta_base)
     return Result(data=data, meta=meta, tokenUsage=usage.model_copy())
 
@@ -91,22 +98,28 @@ def extract_bytes(data: bytes, cfg: Config, today: Optional[date] = None,
     usage = TokenUsage()
     result: Optional[Result] = None
     try:
-        result = _run("primary", cfg.primary, text, None, today, targets, usage, meta_base)
-        if not cfg.fallback and _no_events(result) and D.dates_in_text(text, D.default_order()):
+        result = _run("primary", cfg.primary, text, today, targets, usage, meta_base)
+        if not cfg.fallback and ((_no_events(result) and D.dates_in_text(text, D.default_order()))
+                                 or _missing_pet(result)):
             # the model sometimes answers with zero events for a page that plainly lists dated vaccines (same
             # text, same prompt, temperature 0): one more try, keep the better answer (a configured fallback
             # tier already handles this case)
-            again = _run("primary", cfg.primary, text, None, today, targets, usage, meta_base)
-            if _score(again) < _score(result):
+            again = _run("primary", cfg.primary, text, today, targets, usage, meta_base)
+            if _not_record(result) != _not_record(again):
+                # one read says it is no vaccine record (a software screen), the other found vaccines: keep the
+                # vaccines, but a person decides
+                result = again if _not_record(result) else result
+                result.meta.reviewReasons.append(f"{NOT_RECORD}? the two reads disagree")
+                result.meta.needsHumanReview = True
+            elif _score(again) < _score(result):
                 result = again
     except LlmError as e:
         if not cfg.fallback:
             raise
         primary_err = str(e)
     if cfg.fallback and (result is None or result.meta.needsHumanReview):
-        images = ingest.render_page_images(data) if cfg.fallback.vision else None
         try:
-            fb = _run("fallback", cfg.fallback, text, images, today, targets, usage, meta_base)
+            fb = _run("fallback", cfg.fallback, text, today, targets, usage, meta_base)
             if result is None or _score(fb) < _score(result):
                 result = fb
         except LlmError:

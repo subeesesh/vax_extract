@@ -11,7 +11,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-from .schema import Result
+from .schema import Result, out_expiry
 
 log = logging.getLogger(__name__)
 
@@ -21,7 +21,7 @@ WIDTHS = {"PetName": 16, "POName": 20, "Immunization_Type_Name": 18, "created_on
           "status": 13, "Document_URL": 40, "Results - Comment": 50, "Verified By": 24, "final_json": 60}
 
 
-OCR_NAMES = {"rapid": "RapidOCR", "paddle": "PaddleOCR", "tesseract": "Tesseract"}
+OCR_NAMES = {"rapid": "RapidOCR"}
 
 
 def verified_by(model: str, ocr_engine: str) -> str:
@@ -54,7 +54,7 @@ def rows_for(result: Result, document: str, verified_by: str, created: datetime)
             else:
                 notes.append("not on document")
             rows.append({**base, "PetName": p.name, "Immunization_Type_Name": v.name,
-                         "Expiration_date": datetime.fromisoformat(v.expirationDate) if v.expirationDate else None,
+                         "Expiration_date": datetime.fromisoformat(out_expiry(v.expirationDate)) if v.expirationDate else None,
                          "status": "Verified" if ok else ("Needs review" if matched else "Not found"),
                          "is_verified_by_ai": ok, "Results - Comment": "; ".join(notes + v.reviewReasons)})
     return rows
@@ -70,7 +70,7 @@ def _printed_rows_for(result: Result, base: dict) -> list[dict]:
             seen.add(key)
             ok = not e.needsHumanReview
             rows.append({**base, "PetName": p.name, "Immunization_Type_Name": e.rawName,
-                         "Expiration_date": datetime.fromisoformat(e.dueDate) if e.dueDate else None,
+                         "Expiration_date": datetime.fromisoformat(out_expiry(e.dueDate)) if e.dueDate else None,
                          "status": "Extracted" if ok else "Needs review", "is_verified_by_ai": ok,
                          "Results - Comment": f"given {e.dateAdministered or 'n/a'}"})
     return rows

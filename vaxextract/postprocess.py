@@ -8,6 +8,7 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
+from difflib import SequenceMatcher
 from typing import Optional
 
 from . import dates as D
@@ -29,6 +30,7 @@ class _Ev:
     due_src: Optional[str] = None
     reasons: list = field(default_factory=list)
     also: list = field(default_factory=list)  # other raw names merged into this event
+    part: int = 0  # one row printing an interval per part ('Da2pp (3 year) + Lepto (1 year)'): which part
 
 
 def _pdate(s: Optional[str], order: str):
@@ -70,6 +72,26 @@ def _printed_months(name: str) -> set[int]:
     return {m for m in found if _months(m)}
 
 
+def _llm_months(e, name: str, value: Optional[int]) -> Optional[int]:
+    """The model's interval, kept only when the name prints it: as a number and unit ('3yr', '12 mo') or as the words
+    the model quotes in interval_text ('Annual'). A number read out of a code or dose number ('DA2PPvL-1') is dropped,
+    so no expiry is derived from it and the empty expiry goes to review instead."""
+    v = _months(value)
+    if not v:
+        return None
+    if v in _printed_months(name):
+        return v
+    quoted = (e.interval_text or "").strip()
+    printed = re.sub(r"\s+", "", quoted).lower() in re.sub(r"\s+", "", name).lower()
+    if not (quoted and printed and _UNIT.search(quoted)):
+        return None
+    stated = _printed_months(quoted)  # a quoted '3 year' must mean 36: Kairo's '(3 year)' quoted for a 12
+    return v if not stated or v in stated else None
+
+
+_UNIT = re.compile(r"(annual|yearly|years?|yrs?|months?|mos?|weeks?|wks?)\b", re.I)  # time units, as in _INTERVAL
+
+
 def _item_months(name: str, llm_months: Optional[int]) -> Optional[int]:
     """The validity interval of a whole printed item (no requested name to split it by): the interval printed in its
     name wins over the model's (which it sometimes leaves out); a combination printing different intervals for its
@@ -77,6 +99,63 @@ def _item_months(name: str, llm_months: Optional[int]) -> Optional[int]:
     its own interval instead."""
     printed = _printed_months(name)
     return min(printed) if printed else _months(llm_months)
+
+
+_NEGATED = re.compile(r"\b(?:no(?!\.)|non|not|without|excl\w*|minus|w/o)\W*$", re.I)
+
+
+def _shown(name: str, quote: Optional[str]) -> bool:
+    """A match counts only if the words it quotes as showing the disease are printed in the row's name, and not
+    after 'no' / 'without' ('DHPPV (NO LEPTO)'). A one- or two-letter quote is an abbreviation letter: it must be
+    printed in that case ('L' of 'DHLPP', not the l of 'Annual'). Spaces and punctuation are ignored. A list of
+    quotes ('D, A, P' of 'DHLPP') counts if every one of them is shown."""
+    pieces = [p for p in re.split(r"\s*(?:[,;&+]|\band\b)\s*", quote or "") if p.strip()]
+    if len(pieces) == 1 and all(len(w) <= 2 for w in pieces[0].split()):  # 'D P': letters apart
+        pieces = pieces[0].split()
+    if len(pieces) > 1:
+        return all(_shown(name, p) for p in pieces)
+    q = re.sub(r"[\W_]+", "", quote or "")
+    if not q:
+        return False
+    flat, at = "", []  # name without spaces/punctuation, and where each kept character came from
+    for i, c in enumerate(name):
+        if c.isalnum():
+            flat += c
+            at.append(i)
+    short = len(q) <= 2
+    hay, needle = (flat, q) if short else (flat.lower(), q.lower())
+    for k in [k for k in range(len(hay)) if hay.startswith(needle, k)]:
+        if _NEGATED.search(name[:at[k]]):
+            continue
+        if short and not _abbreviation(name, at[k]):
+            continue
+        return True
+    if short:
+        return False
+    # OCR spells the same word differently in two places ('Bordatella Vaccine' quoted for 'Oral Bordetella Annual'):
+    # the quote's longest word, spelled nearly the same, printed in the name and not negated
+    key = max(re.findall(r"[a-z0-9]+", (quote or "").lower()), key=len, default="")
+    if len(key) < 5:
+        return False
+    for m in re.finditer(r"[A-Za-z0-9]+", name):
+        if SequenceMatcher(None, key, m.group().lower()).ratio() >= 0.8 and not _NEGATED.search(name[:m.start()]):
+            return True
+    return False
+
+
+def _abbreviation(name: str, i: int) -> bool:
+    """The word around name[i] reads as an abbreviation: two or more capitals ('DHLPP', 'DAPPv', 'DA2PP'), or all
+    lower case with at most one vowel ('dhlpp', 'da2pp') - not an ordinary word ('Annual')."""
+    word = re.findall(r"\w+", name[:i][::-1][:40])  # characters of the word before i, reversed
+    word = (word[0][::-1] if word and name[:i] and name[i - 1].isalnum() else "") + re.match(r"\w*", name[i:]).group()
+    if _INTERVAL.fullmatch(word):  # '3YR' is an interval, not an abbreviation
+        return False
+    if any(c.isdigit() for c in word) and any(c.isalpha() for c in word):  # 'Da2pl', 'DA2PP', 'cpv2'
+        return True
+    letters = [c for c in word if c.isalpha()]
+    if sum(c.isupper() for c in letters) >= 2 or letters == [name[i]] and name[i].isupper():  # or 'L' of 'DA2PP+L'
+        return True
+    return all(c.islower() for c in letters) and sum(c in "aeiou" for c in letters) <= 1
 
 
 def _due_list(rp: RawPet, order: str, today: date) -> bool:
@@ -91,23 +170,88 @@ def _due_list(rp: RawPet, order: str, today: date) -> bool:
                                    for g in dated)
 
 
-def _build_pet(rp: RawPet, order: str, today: date, targets: list[str], lines: list[str], seen: set):
+# a row whose name says the dose was not given ('DECLINED: 1st Canine influenza'): status words, not vaccine names
+_NOT_GIVEN = re.compile(r"\b(declined|refused|not given)\b", re.I)
+
+
+def _words(disease: str) -> frozenset:
+    return frozenset(re.findall(r"[a-z0-9]+", disease.lower()))
+
+
+def _same_disease(a: str, b: str) -> bool:
+    """'Canine Distemper' = 'Distemper' (one name's words inside the other's); 'Canine Influenza' != 'Parainfluenza'."""
+    wa, wb = _words(a), _words(b)
+    return bool(wa and wb) and (wa <= wb or wb <= wa)
+
+
+_SPECIES = {"dog": "dog", "dogs": "dog", "canine": "dog", "k9": "dog", "cat": "cat", "cats": "cat", "feline": "cat"}
+
+
+def _species(s: Optional[str]) -> set:
+    return {_SPECIES[w] for w in re.findall(r"[a-z0-9]+", (s or "").lower()) if w in _SPECIES}
+
+
+def _diseases(expansion: dict, target: str, species: set) -> list[list[str]]:
+    """The disease lists a requested name stands for, for the pet's species (all of them if the species is unknown)."""
+    out = []
+    for alt in expansion.get(target) or []:
+        sp = _species(alt.get("species"))
+        if not sp or not species or sp & species:
+            out.append([d for d in alt.get("diseases") or [] if d])
+    return [d for d in out if d]
+
+
+def _own_words(target: str) -> set:
+    """The words of a requested combination's name that name it alone ('dhlpp', 'fvrcp' of 'DHLPP / FVRCP')."""
+    return {w.lower() for w in re.findall(r"[A-Za-z0-9]+", target) if len(w) >= 4}
+
+
+def _parts_of(expansion: dict, targets: list[str], species: set) -> dict:
+    """For each requested name B, the requested combination names A that contain every disease of B (Leptospirosis
+    -> DHLPP / FVRCP for a dog): a row of B is also a part of A. From the name definitions the LLM wrote for this
+    request; nothing here knows vaccine names. {} without definitions."""
+    out: dict = defaultdict(list)
+    for b in targets:
+        for a in targets:
+            if a == b:
+                continue
+            for db in _diseases(expansion, b, species):
+                if any(len(da) > len(db) and all(any(_same_disease(x, y) for y in da) for x in db)
+                       for da in _diseases(expansion, a, species)):
+                    out[b].append(a)
+                    break
+    return out
+
+
+def _build_pet(rp: RawPet, order: str, today: date, targets: list[str], lines: list[str], seen: set,
+               expansion: Optional[dict] = None):
     canon = {t.strip().lower(): t for t in targets}
+    parts_of = _parts_of(expansion or {}, targets, _species(rp.species))
     evs: list[_Ev] = []
     diags: dict = {}
     due_list = _due_list(rp, order, today)
     for e in rp.events:
         name = re.sub(r"\s+", " ", e.raw_name or "").strip()  # a name wrapped over two lines is one name
         kind = (e.kind or "vaccine").strip().lower()
-        if not name or kind == "other":
+        if not name or kind == "other" or _NOT_GIVEN.search(name):
             continue
-        g, r1 = _pdate(e.given_date, order)
-        d, r2 = _pdate(e.due_date, order)
+        given_s, due_s = e.given_date, e.due_date
+        if given_s and not due_s and D.MONTH_ONLY.fullmatch(given_s.strip()):
+            given_s, due_s = None, given_s  # a dose is dated to the day: a month-only date ('11-24') is a reminder
+        g, r1 = _pdate(given_s, order)
+        d, r2 = _pdate(due_s, order)
+        if d and g and due_s and D.MONTH_ONLY.fullmatch(due_s.strip()):
+            d = D.with_day(d, g.day)  # a month-only due date ('03/2027') takes the dose's day; with no dose, the 1st
         reasons = r1 + r2
         if not any(c.isalpha() for c in name):
             reasons.append("name is not a vaccine name (looks like a date or number)")
-        evidence = _clean(e.evidence) or _find_line(name, lines)
+        evidence = _find_line(name, lines)
         if g and g > today + timedelta(days=1) and due_list:
+            d, g = g, None
+        elif g and g > today + timedelta(days=1) and d is None and g <= today + timedelta(days=366):
+            # the row's only date is less than a year ahead: a due date in an empty 'Given' cell's place (Xena:
+            # 'Rabies Vaccination | 11/26/2026' under DATE GIVEN | DATE DUE). Used as the due date; a person checks
+            reasons.append(f"only date {g.isoformat()} is in the future: read as the due date")
             d, g = g, None
         elif g and g > today + timedelta(days=1):
             # often a next-due date printed in a 'vaccinations done' list, but just as often an OCR misread
@@ -132,23 +276,45 @@ def _build_pet(rp: RawPet, order: str, today: date, targets: list[str], lines: l
             continue
         matches, unknown = {}, []
         for m in e.matches:
+            if not _shown(name, m.shown_by):  # nothing printed in the name shows that disease: not a match
+                continue
             t = canon.get((m.name or "").strip().lower())
             if t is None:
                 if m.name:
                     unknown.append(m.name)
             elif t not in matches:
                 matches[t] = m
+        for b, m in list(matches.items()):  # a Lepto row is also a part of the requested DHLPP
+            for a in parts_of.get(b, []):
+                if a not in matches:
+                    matches[a] = m.model_copy(update={"partial": True})
+        # a row printing the requested combination's own name ('DHLPP Vaccination' for 'DHLPP / FVRCP') is the whole
+        # combination: it also covers the requested Leptospirosis. The model's partial=False is not enough ('DHPP')
+        printed = {w.lower() for w in re.findall(r"[A-Za-z0-9]+", name)}
+        for b, owners in parts_of.items():
+            a = next((a for a in owners if a in matches and printed & _own_words(a)), None)
+            if a and b not in matches:
+                matches[b] = matches[a].model_copy(update={"partial": False})
         if unknown:
             reasons.append("matched names not in the request: " + ", ".join(unknown))
         if not matches:
-            evs.append(_Ev(name, None, False, g, d, evidence, _item_months(name, e.duration_months),
+            evs.append(_Ev(name, None, False, g, d, evidence, _item_months(name, _llm_months(e, name, e.duration_months)),
                            "document" if d else None, reasons))
             continue
+        printed_m = _printed_months(name)
+        combos = {a for owners in parts_of.values() for a in owners}
         for t, m in matches.items():
-            evs.append(_Ev(name, t, m.partial, g, d, evidence,
-                           _months(m.duration_months) or _months(e.duration_months)
-                           or (_single(_printed_months(name)) if len(matches) == 1 else None),
-                           "document" if d else None, list(reasons)))
+            if t in combos and len(printed_m) > 1 and d is None:
+                # a combination row printing an interval per part ('DA2P-Pv 3yr 4L 1yr', 'Da2pp (3 year) + Lepto
+                # (1 year)') and no due date: one event per part, so the first-expiring part sets the date and a
+                # later dose of one part (Lepto 4 the next year) renews only that part
+                for i, mo in enumerate(sorted(printed_m)):
+                    evs.append(_Ev(name, t, m.partial, g, d, evidence, mo, None, list(reasons), part=i))
+            else:
+                evs.append(_Ev(name, t, m.partial, g, d, evidence,
+                               _llm_months(e, name, m.duration_months) or _llm_months(e, name, e.duration_months)
+                               or (_single(printed_m) if len(matches) == 1 else None),
+                               "document" if d else None, list(reasons)))
             if g:
                 seen.add((t, g))
             if d:
@@ -174,12 +340,22 @@ def _join_due_tests(tests: list[DiagnosticTest]) -> list[DiagnosticTest]:
 
 
 def _merge_dups(evs: list[_Ev]) -> list[_Ev]:
+    """The same dose printed twice (invoice line + certificate row) is one row. Rows of one day that match different
+    requested names and print different expiries are different parts ('Bordetella / Parainfluenza' due 2024 and
+    'DHPP 3yr' due 2026, both given 05-23-23): they stay apart, so the combination takes its first-expiring part in
+    force and an expired part is seen."""
     out: dict = {}
     for e in evs:
         undated = e.given is None and e.due is None  # never merge rows just because both lack dates
         key = (e.target, e.given, None if e.given else e.due,
-               e.raw_name.lower() if e.target is None or undated else "")
+               e.raw_name.lower() if e.target is None or undated else "", e.part)
         k = out.get(key)
+        apart = k is not None and ((e.due and k.due and e.due != k.due) or (
+            # no due printed, different intervals: 'DAPP, Triannual, 3 years' and 'Lepto, Annual, 1 year' (2_expiry)
+            not e.due and not k.due and e.months and k.months and e.months != k.months))
+        if apart and _cover(e, evs) != _cover(k, evs):
+            key = key + (len(out),)  # another part given the same day
+            k = None
         if k is None:
             out[key] = e
             continue
@@ -218,6 +394,7 @@ def _join_due(evs: list[_Ev], key=lambda e: e.target) -> list[_Ev]:
             fits = implied is None or abs((d.due - implied).days) <= 31
             if latest and latest.due is None and d.due > latest.given and fits:
                 latest.due, latest.due_src = d.due, "document"
+                latest.reasons += [r for r in d.reasons if r not in latest.reasons]  # a doubt about the date goes with it
                 latest.evidence = " || ".join(dict.fromkeys(x for x in (latest.evidence, d.evidence) if x))[:400] or None
             elif latest and latest.due == d.due:
                 continue
@@ -244,12 +421,28 @@ def _iso(d: Optional[date]) -> Optional[str]:
     return d.isoformat() if d else None
 
 
-def _current(mine: list[_Ev], today: date) -> list[_Ev]:
+def _current(mine: list[_Ev], today: date, evs: list[_Ev]) -> list[_Ev]:
     """The rows still in force for one requested name: an expired row is history once another row for the name is
     still valid (last year's annual shot next to this year's 3-year one; 'Nobivac 4/Third' due 2021 next to
     'Nobivac 4' due 2027). Valid rows all stay - without knowing the components, a later dose may be another part of
     the combination (Lepto given after DHPP), not a replacement. Rows printing no expiry stay if they are the latest dose."""
     valid = any(s.due and s.due >= today for s in mine)
+    if not valid:
+        # all expired: the latest dose of each part is the record, not the oldest due date (Sasuke's 2021 shot);
+        # rows matching the same requested names are one part ('DHPP 3yr' and 'DHPP Annual'; 'Lepto Annual' and 'Lepto 1st')
+        # A part counts only if it was still in force when the newest dose was given (Zelda: DHPP 3yr due 2026-05-22
+        # next to the 2025 Lepto); one that had lapsed by then was renewed by it (Sasuke: 2023 DA2PP, then DA2PP+L)
+        newest = _latest(mine)
+        last = max((e.given for e in newest if e.given), default=None)
+        if last is None:
+            return newest
+        parts: dict = defaultdict(list)
+        for e in mine:
+            parts[_cover(e, evs)].append(e)
+        out = list(newest)
+        for rows in parts.values():
+            out += [e for e in _latest(rows) if e not in out and e.due and e.due > last]
+        return out
     last = max((s.given for s in mine if s.given), default=None)
     return [r for r in mine if (r.due and (r.due >= today or not valid))
             or (not r.due and (r.given is None or r.given == last))]
@@ -264,6 +457,52 @@ def _latest(rows: list[_Ev]) -> list[_Ev]:
     return [e for e in due if e.due == max(x.due for x in due)] if due else rows
 
 
+def _cover(e: _Ev, evs: list[_Ev]) -> frozenset:
+    """Every requested name the row's printed line matches."""
+    return frozenset(x.target for x in evs if x.target and x.raw_name.lower() == e.raw_name.lower())
+
+
+def _dose_or_part(cur: list[_Ev], evs: list[_Ev]) -> list[str]:
+    """Two valid partial rows matching the same requested names, the older one due first (Coco: 'Canine Da2PP First'
+    due 2029-03-25, 'Canine DaPP Third' due 2029-06-16). A later dose of the same product means the later date; another
+    part of the combination (Lepto given after DHPP) means the earlier one. Without the components the two can't be told
+    apart, so the earliest stays (rule 1) and a person decides. When the older row is due later, both readings agree."""
+    rows = [e for e in cur if e.partial and e.due and e.given]
+    out = []
+    for a in rows:
+        for b in rows:
+            if a.given < b.given and a.due < b.due and _cover(a, evs) == _cover(b, evs):
+                out.append(f"older dose or another part? '{a.raw_name}' given {a.given.isoformat()} due "
+                           f"{a.due.isoformat()}, '{b.raw_name}' given {b.given.isoformat()} due {b.due.isoformat()}")
+    return out
+
+
+def _expired_parts(mine: list[_Ev], cur: list[_Ev], evs: list[_Ev], today: date) -> list[_Ev]:
+    """Expired parts of a combination that `_current` dropped while another part is still valid (Lepto due
+    2026-10-09 next to DA2PP due 2027): the combination takes the earliest date, the expired part's, and a person
+    checks. A row's coverage = every requested name its printed line matches; an
+    expired row with the same coverage as a row still in force is just an older dose and stays history."""
+    cover = lambda e: _cover(e, evs)  # noqa: E731
+
+    def redosed(e: _Ev) -> bool:
+        # a later dose of the same printed name exists anywhere on the document (Onyx), or a later row of this name
+        # covers the same part (Rubi: 2025 'Bordetella/Lepto', then 2026 'DA2/PV/Rabies(3yr)Lepto(1yr)')
+        if not e.given:
+            return False
+        same = cover(e) - {e.target}
+        return any(x.given and x.given > e.given and (x.raw_name.lower() == e.raw_name.lower()
+                                                      or (x.target == e.target and same & cover(x))) for x in evs)
+
+    in_force = {cover(c) for c in cur}
+    out: list[_Ev] = []
+    for e in mine:
+        if (e.partial and e.due and e.due < today and not any(e is c for c in cur)
+                and not redosed(e) and cover(e) not in in_force):
+            out.append(e)
+    # the latest dose of each expired part (an older dose of the same part is history)
+    return [e for e in out if not any(o.due > e.due and cover(o) == cover(e) for o in out)]
+
+
 def _rollup(target: str, evs: list[_Ev], today: date) -> Vaccination:
     """One requested name: the latest record of the rows that cover it fully, and next to it every part of a
     combination still in force; the one that expires first wins (a combination is only as current as its
@@ -271,19 +510,50 @@ def _rollup(target: str, evs: list[_Ev], today: date) -> Vaccination:
     mine = [e for e in evs if e.target == target]
     if not mine:
         return Vaccination(name=target)
-    cur = _current(mine, today)
+    cur = _current(mine, today, evs)
+    valid = any(e.due and e.due >= today for e in mine)
+    expired = _expired_parts(mine, cur, evs, today) if valid else []
     full = _latest([e for e in cur if not e.partial])
-    chosen = full + [e for e in cur if e.partial] if full else cur
+    chosen = (full + [e for e in cur if e.partial] if full else cur) + expired
     dated = [e for e in chosen if e.due]
     head = min(dated, key=lambda e: (e.due, e.due_src != "document")) if dated else _latest(chosen)[0]
+    extra = []
+    # a reminder still in force that falls due before the latest dose's expiry (Leo: 'Canine Lepto 1yr Vaccine' due
+    # 12/04/2026 next to the 3-year 'Distemper+Leptospirosis (DA2PP+L)' row due 12/04/2028): the earlier date. Not sent
+    # to review: the rule decides it (user, 2026-11-11, Oliver's 'Rabies Vaccination-3 Yr' reminder)
+    sooner = [e for e in cur if not e.given and e.due and head.due and today <= e.due
+              and (head.due - e.due).days > 31]  # a day or two apart is the same dose's own reminder (Gracie)
+    if sooner:
+        first = min(sooner, key=lambda e: e.due)
+        chosen = [first] + chosen
+        head = first
+    if head.due is None and head.given:
+        # the latest row prints no due date (Kiya: a 2024 rabies tag row after the 2023 3-year vaccine): show the
+        # latest row that has one, and let a person check
+        older = [e for e in mine if e.due and e.given and e.given < head.given]
+        if older:
+            prev = max(older, key=lambda e: (e.given, e.due))
+            extra.append(f"latest dose prints no due date: '{head.raw_name}' given {head.given.isoformat()}")
+            chosen = [prev] + chosen
+            head = prev
     chosen = [head] + [e for e in chosen if e is not head]
     names = []
     for e in chosen:
         names += [n for n in [e.raw_name, *e.also] if n not in names]
     reasons = sorted({r for e in chosen for r in e.reasons})
-    # every row in force covers only part of the name and they are all one product: the rest is not on the document
-    if all(e.partial for e in cur) and len({n.lower() for e in cur for n in [e.raw_name, *e.also]}) == 1:
-        reasons.append(f"combination not complete: only '{cur[0].raw_name}' is printed for {target}")
+    # every row in force covers only part of the name and they are all one product: the rest is not on the document.
+    # When every dose has expired only the latest is in force; judge the parts on all rows, as the history shows them
+    basis = cur if valid else mine
+    # (also when the rows print different names but are all the one part matched to another requested name:
+    # Kismet's 'Lepto Annual' and 'Lepto 1st', both Leptospirosis, and no DHPP row)
+    covers = {_cover(e, evs) for e in basis}
+    one_part = len(covers) == 1 and len(next(iter(covers))) > 1
+    if all(e.partial for e in basis) and (one_part or len({n.lower() for e in basis for n in [e.raw_name, *e.also]}) == 1):
+        reasons.append(f"combination not complete: only '{basis[0].raw_name}' is printed for {target}")
+    if head.due is None:  # printed rows match the name but none gives or implies an expiry: a person has to look
+        reasons.append(f"no expiry printed for {target}")
+    reasons += extra + _dose_or_part(cur, evs) + list(dict.fromkeys(
+        f"part expired: '{e.raw_name}' due {e.due.isoformat()}" for e in expired))
     return Vaccination(
         name=target,
         partialMatch=all(e.partial for e in cur),
@@ -366,6 +636,19 @@ def _not_the_clinic(owner, clinic):
     return owner.model_copy(update={f: None for f in copied}) if copied else owner
 
 
+def _pet_name(name: Optional[str], people: set) -> Optional[str]:
+    """The pet's own name: no record number before it ('26-187 KANE SZABO'), no ID in brackets ('Bear (26-7430)',
+    'Max (Record - 47667)'), no owner or vet name after it ('KANE SZABO' with client Alexandra Szabo, 'Jumanji
+    Katherine' with provider Katherine ...). Never cut to nothing."""
+    s = re.sub(r"\s*[(\[][^)\]]*\d[^)\]]*[)\]]", " ", name or "")
+    words = s.split()
+    while len(words) > 1 and any(c.isdigit() for c in words[0]):
+        words = words[1:]
+    while len(words) > 1 and words[-1].lower().strip(".,") in people:
+        words = words[:-1]
+    return " ".join(words) or name
+
+
 def _merge_surname_pets(pets: list[RawPet]) -> list[RawPet]:
     """One animal listed twice, once with the owner's surname attached ('Ollie' on the invoice lines, 'Ollie
     McAuliffe's Reminders' below): merge them under the bare name, and drop that surname from the other pets that
@@ -397,16 +680,45 @@ def _merge_surname_pets(pets: list[RawPet]) -> list[RawPet]:
     return list(out.values())
 
 
-def build_data(raw: RawExtraction, text: str, today: Optional[date] = None, targets: Optional[list[str]] = None):
-    """RawExtraction + OCR text + requested vaccine names -> (Data, review_reasons)."""
+_NAMED_PET = [re.compile(p) for p in (
+    r"Reminders\s+for:?\s+([A-Z][A-Za-z\-]+)",                         # 'Reminders for: Lillie (Weight...'
+    r"\b([A-Z][A-Za-z\-]+)(?:\s+[A-Z][A-Za-z\-]+)?'s\s+(?:Expired\s+)?Reminders",  # "Mila McAuliffe's Reminders"
+    r"(?i:\bpatient)\s*:\s*([A-Z][A-Za-z\-]+)",                          # 'PATIENT: Zoey', 'Patient: Archie'
+    r"(?i:\bpatient chart for)\s+([A-Z][A-Za-z\-]+)",                     # 'Patient Chart for Lillie'
+)]
+MISSING_PET = "pet named in the document but not extracted"
+NOT_RECORD = "not a vaccine record"
+
+
+def _missing_pets(text: str, pets: list[Pet]) -> list[str]:
+    """Pet names the document prints in a patient / reminder heading that no extracted pet carries: the model
+    sometimes leaves a whole animal out of a multi-pet document (Mila on the McAuliffe invoice, about half the runs)."""
+    have = {w.lower() for p in pets for w in re.findall(r"[A-Za-z\-]+", p.name or "")}
+    found = []
+    for rx in _NAMED_PET:
+        for m in rx.finditer(text):
+            n = m.group(1)
+            if len(n) > 1 and n.lower() not in have and n not in found:
+                found.append(n)
+    return found
+
+
+def build_data(raw: RawExtraction, text: str, today: Optional[date] = None, targets: Optional[list[str]] = None,
+               expansion: Optional[dict] = None):
+    """RawExtraction + OCR text + requested vaccine names (+ the LLM's definitions of them) -> (Data, review_reasons)."""
     today = today or date.today()
     targets = list(dict.fromkeys(t.strip() for t in targets or [] if t and t.strip()))
     strings = [s for p in raw.pets for e in p.events for s in (e.given_date, e.due_date)]
     order = D.infer_order(strings)
     seen: set = set()
     lines = [ln for ln in text.splitlines() if ln.strip()]
-    pets = [_build_pet(p, order, today, targets, lines, seen) for p in _merge_surname_pets(raw.pets)]
-    reasons: list[str] = []
+    people = {w.lower() for party in (raw.owner, raw.veterinarian) if party and party.name
+              for w in re.findall(r"[A-Za-z][A-Za-z'\-]+", party.name) if len(w) > 2}
+    other = (raw.document_type or "").strip().lower() == "other"  # a software screen's timestamps are not expiries
+    named = [p.model_copy(update={"name": _pet_name(p.name, people), **({"events": []} if other else {})})
+             for p in raw.pets]
+    pets = [_build_pet(p, order, today, targets, lines, seen, expansion) for p in _merge_surname_pets(named)]
+    reasons: list[str] = [NOT_RECORD] if other else []
     if not pets:
         reasons.append("no pet found")
     owner = (raw.owner.name or "").strip().lower() if raw.owner else ""
@@ -422,6 +734,9 @@ def build_data(raw: RawExtraction, text: str, today: Optional[date] = None, targ
         flagged = sum(v.needsHumanReview for v in p.events)
         if flagged:
             reasons.append(f"{flagged} vaccination event(s) flagged")
+    gone = _missing_pets(text, pets) if pets else []
+    if gone:
+        reasons.append(f"{MISSING_PET}: " + ", ".join(gone))
     missed = _coverage_warnings(text, seen, order, targets)
     if missed:
         reasons.append(f"possible missed events ({len(missed)}): " + " ; ".join(missed[:3]))

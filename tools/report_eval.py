@@ -7,7 +7,10 @@
 With --docs, each document of the report that has no prediction yet is extracted first, with the names the report
 requests for it (cached as <preds>/<file stem>.json). Rows are matched to a prediction by the file name at the end
 of Document_URL, else (no URL column) to the prediction whose pet name shares the row's first word. Inside a file
-the pet is the one sharing the row's first word, or the only pet. A row is correct when the extractor's expiry for that
+the pet is the one sharing the row's first word, or the only pet. Without a URL column every file in --docs is
+extracted with all the names the report requests, and rows whose pet is on none of the documents are left out of the
+score (the report may cover more pets than the folder); a pet on several documents is scored on whichever of them
+gives the report's date. Rows with no Expiration_date, or a status other than COMPLETED, are skipped. A row is correct when the extractor's expiry for that
 requested name (the pet's `vaccinations` roll-up) equals the report's date; [review] marks rows it flags for review.
 
 Report expirations are the end of the printed due date (Reggie's chart prints Bordetella 04-26-27; the report says
@@ -25,6 +28,7 @@ from pathlib import Path
 
 import openpyxl
 
+ALL_PETS: set[str] = set()  # every pet the report names, scored or not
 COLS = ["PetName", "POName", "Immunization_Type_Name", "Expiration_date", "Document_URL"]
 
 
@@ -44,7 +48,10 @@ def load_rows(path: Path) -> list[dict]:
     for r in rows:
         if not r.get("PetName"):
             continue
+        ALL_PETS.add(first_word(str(r["PetName"])))  # PENDING rows too: they name pets on the documents
         exp = r["Expiration_date"]
+        if exp in (None, "") or str(r.get("status") or "COMPLETED").strip().upper() != "COMPLETED":
+            continue  # not verified yet (PENDING): nothing to score against
         if not hasattr(exp, "date"):
             s = str(exp).strip().split(" ")[0]
             exp = datetime.strptime(s, "%m/%d/%Y" if "/" in s else "%Y-%m-%d")
@@ -67,6 +74,9 @@ def extract_missing(rows, preds: Path, folders: list[Path]) -> None:
     for _pet, vax, _exp, doc in rows:
         if doc and vax not in targets[doc]:
             targets[doc].append(vax)
+    if not any(r[3] for r in rows):  # no Document_URL: every file, asked for every name the report uses
+        names = list(dict.fromkeys(r[1] for r in rows))
+        targets = {n: names for n in files}
     todo = [d for d in targets if not (preds / (Path(d).stem + ".json")).exists()]
     for i, doc in enumerate(todo, 1):
         if doc not in files:
@@ -95,10 +105,15 @@ def main() -> int:
     if a.docs:
         extract_missing(rows, preds, a.docs)
     pets_in = {f.stem: json.loads(f.read_text(encoding="utf-8"))["data"]["pets"] for f in sorted(preds.glob("*.json"))}
-    by_name = {}
+    by_name = defaultdict(list)  # no URL column: a pet may be on several documents
     for stem, pets in pets_in.items():
         for p in pets:
-            by_name.setdefault(first_word(p.get("name")), (stem, p))
+            by_name[first_word(p.get("name"))].append((stem, p))
+
+    report_names = ALL_PETS
+
+    def roll(hit, vax):
+        return next((v for v in hit[1].get("vaccinations", []) if v.get("name") == vax), {})
 
     shift = timedelta(0 if a.no_shift else 1)
     by_status, used, fails, reviewed = Counter(), set(), [], []
@@ -112,29 +127,41 @@ def main() -> int:
             hit = None if pets is None else next(((stem, p) for p in pets if same(p)),
                                                  (stem, pets[0]) if len(pets) == 1 else None)
         else:
-            hit = by_name.get(first_word(pet))
+            w = first_word(pet)
+            # 'Sam' on the document is the report's 'Sammy', unless the report has its own 'Sam' ('Jack' vs 'Jackson')
+            cands = [h for k, hs in by_name.items() if k and w and (k == w or (
+                (k.startswith(w) or w.startswith(k)) and k not in report_names)) for h in hs]
+            hit = next((h for h in cands if roll(h, vax).get("expirationDate") == want),
+                       next((h for h in cands if roll(h, vax).get("expirationDate")), cands[0] if cands else None))
         if not hit:
-            got, status = "", "NO PREDICTION" if doc and Path(doc).stem not in pets_in else "PET NOT FOUND"
+            got, status = "", ("NO PREDICTION" if doc and Path(doc).stem not in pets_in
+                               else "PET NOT FOUND" if doc else "PET NOT IN DOCS")
+            if status == "PET NOT IN DOCS":
+                by_status[status] += 1
+                continue
         else:
             used.add(hit[0])
             evs = hit[1].get("events", [])
             dues = [e.get("dueDate") for e in evs if e.get("target") == vax]
-            roll = next((v for v in hit[1].get("vaccinations", []) if v.get("name") == vax), {})
-            got = roll.get("expirationDate") or ""  # the extractor's own answer for this requested name
+            r_ = roll(hit, vax)
+            got = r_.get("expirationDate") or ""  # the extractor's own answer for this requested name
             status = "OK" if got == want else "NOT EXTRACTED" if not dues else "NO DUE DATE" if not got else "WRONG DATE"
             # the report's date was read, but the extractor chose another of the pet's rows for this name
             if status != "OK" and want in dues:
                 status = "READ, NOT CHOSEN"
             elif status != "OK" and want in {e.get("dueDate") for e in evs}:
                 status = "READ, OTHER NAME"
-            if roll.get("needsHumanReview"):
+            if r_.get("needsHumanReview"):
                 status += " [review]"
-                reviewed.append((pet, vax, roll.get("reviewReasons")))
+                reviewed.append((pet, vax, r_.get("reviewReasons")))
         by_status[status] += 1
         if not status.startswith("OK"):
             fails.append((doc or (hit[0] if hit else ""), pet, vax, want, got, status))
+        elif not doc:
+            used.add(hit[0])
     ok = by_status["OK"] + by_status["OK [review]"]
-    print(f"{ok}/{len(rows)} report rows correct ({ok / len(rows):.1%}); " +
+    n = len(rows) - by_status["PET NOT IN DOCS"]
+    print(f"{ok}/{n} report rows correct ({ok / max(n, 1):.1%}); " +
           ", ".join(f"{k}: {v}" for k, v in sorted(by_status.items())))
     print(f"{len(reviewed)} rows sent to review by the extractor")
     docs = {r[3] for r in rows if r[3]}

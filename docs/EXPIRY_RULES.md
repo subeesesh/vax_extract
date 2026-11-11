@@ -1,32 +1,42 @@
 # Vaccine Expiry Extraction Rules
 
-As of 2026-10-27.
+As of 2026-11-10.
 
-With these rules the extractor gets **97.6%** of checkable rows right (200 of 205) against the kennel's report for
-20–26 Oct 2026. Against the kennel's dates exactly as recorded, it is **89.7%** (191 of 213 rows). Both figures
-cover 64 of the 74 documents; the other 10 hit the Gemini API rate limit and still need extracting.
+The accuracy figures below were measured on 2026-10-27, before the 2026-11-10 rule changes (rules 1, 3, 8, 9 and
+10). They need re-measuring. Back then the extractor got **97.6%** of checkable rows right (200 of 205) against
+the kennel's report for 20–26 Oct 2026. Against the kennel's dates exactly as recorded, it got **89.7%** (191 of
+213 rows). Both figures cover 64 of the 74 documents; the other 10 hit the Gemini API rate limit and still need
+extracting.
 
 The rules decide which expiry date the extractor reports for each requested vaccine name (the pet's
-`vaccinations` roll-up). Rules 1–3 are business rules; rules 4–7 support them.
+`vaccinations` roll-up). Rules 1–3 are business rules; rules 4–10 support them.
 
 ## Core rules
 
-1. **A combination takes the earliest expiry.** When a requested combination (e.g. `DHLPP / FVRCP`) is covered by
-   several printed vaccines (e.g. DA2PP 3 yr + Lepto 1 yr), its expiry is the date that expires first.
+1. **A combination takes the earliest expiry, even an expired one.** When a requested combination (e.g.
+   `DHLPP / FVRCP`) is covered by several printed vaccines (e.g. DA2PP 3 yr + Lepto 1 yr), its expiry is the date
+   that expires first. This holds even when that part has already expired. The roll-up is then flagged
+   `needsHumanReview` with the reason `part expired: '<printed name>' due <date>`.
    *Example:* Cooper — DA2PP due 2029-09-21, Lepto due 2027-09-21 → 2027-09-21.
+   *Example:* Calla — DA2PP due 2028-11-01, Lepto due 2026-09-01 (expired) → 2026-09-01, review.
+   An expired part doesn't count when a later row covers the same part. *Example:* Rubi — 2025 `Bordetella/Lepto`,
+   then 2026 `DA2/PV/Rabies(3yr)Lepto(1yr)`: the 2026 row has renewed the Lepto part.
 2. **A missing part goes to review.** When the only valid row for a combination covers just part of it (e.g. DA2PP
-   with no Lepto), the roll-up is flagged `needsHumanReview` with the reason
+   with no Lepto), the roll-up is flagged `partialMatch` and `needsHumanReview` with the reason
    `combination not complete: only '<printed name>' is printed for <requested name>`.
    *Example:* Holly — only `DHP/P-3 Year` printed for DHLPP → review.
    Without vaccine/component lists (none are hard-coded), two or more different partial products that are still
    valid are assumed to complete each other.
-3. **Month-only dates are the 1st of the month.** `MM/YYYY`, `YYYY/MM`, `MM/YY` and `Feb 2027` all mean day 1 of
-   that month: `02/2027`, `2027/02`, `02/27` → 2027-02-01. Applies only when the whole date field is month-only.
+3. **A month-only due date takes the dose's day.** `MM/YYYY`, `YYYY/MM`, `MM/YY` and `Feb 2027` give the month. The
+   day comes from the administered date, clamped to the month's end. With no administered date it is the 1st.
+   *Example:* given 2026-01-31, due `02/2027` → 2027-02-28. No dose date, due `02/2027` → 2027-02-01.
+   Applies only when the whole date field is month-only.
 
 ## Supporting rules
 
-4. **Expired history drops out.** An expired row is ignored when another row for the same requested name is still
-   valid, so an old shot can't become the "earliest" date.
+4. **Expired history drops out.** An expired row of the same product is ignored when another row for the same
+   requested name is still valid, so an old dose can't become the "earliest" date. (An expired *part* of a
+   combination is different: see rule 1.)
    *Example:* Sadie — `Nobivac 4/Third Vaccination` due 2021-02-12 next to `Nobivac 4 Vaccination` due 2027-10-20
    → 2027-10-20.
 5. **A single (non-combination) vaccine uses the latest dose's own expiry,** not the earliest date on the page.
@@ -37,9 +47,23 @@ The rules decide which expiry date the extractor reports for each requested vacc
    future (at least 3 rows, within 6 years), those are next-due dates, not misreads. A single future date among past
    ones is still dropped as a likely OCR misread.
    *Example:* Bentley, Murphy — "Vaccinations done" lists like `02-11-27 | Kennel Cough-oral`.
+8. **A printed due date is used as printed.** It is never recomputed from the interval in the name plus the given
+   date. The interval only fills rows that print no due date.
+   *Example:* Rascal — `Rabies Vac 1yr`, `Expires: 08/13/27` → 2027-08-13.
+   A sticker's or batch line's printed `Exp` date counts as the vaccine's expiry when it is the only date for that
+   vaccine.
+9. **A row printing an interval per part, with no due date, is one event per part.** Each part gets its own
+   interval, so rule 1 picks the first-expiring part, and a later dose of one part renews only that part. Two rows
+   given the same day with different intervals are kept apart the same way.
+   *Example:* Rosie — `DA2P-Pv 3yr 4L 1yr` given 2026-01-21 → 2027-01-21.
+   *Example:* `DAPP, Triannual, 3 years` + `Lepto, Annual, 1 year`, both given 2026-06-23 → 2027-06-23.
+10. **The client payload gives expiry + 1 day.** `to_output` and the sheet's `Expiration_date` report the last valid
+    day + 1 (the kennel's convention). `Result.data` keeps the printed date.
+    *Example:* printed due 2027-02-28 → payload `2027-03-01`.
 
-Implemented in `vaxextract/postprocess.py` (`_current`, `_latest`, `_rollup`, `_merge_dups`, `_due_list`) and
-`vaxextract/dates.py` (`MONTH_ONLY`; month-name dates with a 2-digit year such as `APR 14 26` are also parsed).
+Implemented in `vaxextract/postprocess.py` (`_current`, `_latest`, `_rollup`, `_expired_parts`, `_merge_dups`,
+`_due_list`), `vaxextract/dates.py` (`MONTH_ONLY`, `with_day`; month-name dates with a 2-digit year such as
+`APR 14 26` are also parsed) and `vaxextract/schema.py` (`out_expiry`).
 
 ## How accuracy is measured
 
@@ -54,6 +78,8 @@ Scored with `tools/report_eval.py` against the kennel's "Completed Valid Documen
 - **Matching:** each row is matched to its file through `Document_URL`, and to the pet by name; a shortened name
   counts ("Theo" = "Theodore").
 - **Correct** = the extractor's expiry for that requested name equals the report's date.
+
+Measured 2026-10-27, before the 2026-11-10 rule changes.
 
 | Measured against | Rows correct | % |
 | --- | --- | --- |

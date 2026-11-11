@@ -32,16 +32,16 @@ The full diagram is in [pipeline.html](pipeline.html).
 
 | Module | Role |
 | --- | --- |
-| `ingest.py` | Bytes → pages of tokens (text layer or OCR); page images for the vision fallback |
+| `ingest.py` | Bytes → pages of tokens (text layer or OCR) |
 | `preprocess.py` | Downscale, illumination normalisation, deskew |
-| `ocr.py` | RapidOCR / PaddleOCR / Tesseract engines behind one interface |
+| `ocr.py` | RapidOCR engine |
 | `layout.py` | Tokens → row text with `' \| '` cells |
 | `dates.py` | Date parsing and per-document MDY/DMY inference |
 | `prompt.py`, `llm.py` | Prompt, OpenAI-compatible client, hedged requests, name-expansion cache (LLM side) |
 | `postprocess.py` | Deterministic rules, validation, roll-up |
 | `schema.py` | Pydantic models; `to_output` builds the client payload |
 | `pipeline.py` | `Config.from_env`, `extract_bytes` / `extract_file`, fallback routing, timings |
-| `cli.py`, `server.py`, `sheet.py`, `eval.py` | CLI, web UI/API, verification workbook, scoring |
+| `cli.py`, `server.py`, `sheet.py` | CLI, web UI/API, verification workbook |
 
 ## Extraction module (OCR & layout)
 
@@ -54,7 +54,6 @@ The extraction module turns file bytes into one plain-text page per document pag
 - **OCR pages** (scanned PDFs, rendered at 200 dpi, and images) are capped at `max_pages` = 10. Multi-frame images (TIFF) are read frame by frame, and the EXIF rotation is applied.
 - **Text-layer words keep their style**, meaning font size and colour. This lets the layout split off a differently styled badge (e.g. *Historical*) printed right after a name.
 - **Wrapped table cells are rejoined.** When a line opens a parenthesis and the next line (3 words or fewer, same indent) closes it (`LEPTO (1` / `YR)`), the tail moves back onto the first line.
-- `render_page_images` produces PNGs (150 dpi, longest side 1800 px or less) for the optional vision fallback tier.
 
 ### Preprocessing (`preprocess.py`, OCR path only)
 
@@ -64,11 +63,8 @@ The extraction module turns file bytes into one plain-text page per document pag
 
 ### OCR engines (`ocr.py`)
 
-| Engine | `VAX_OCR` | Install extra | Status |
-| --- | --- | --- | --- |
-| RapidOCR (ONNX) | `rapid` (default) | `.[rapid]` | Used in all live runs |
-| PaddleOCR | `paddle` | `.[paddle]` | Not run here |
-| Tesseract | `tesseract` | `.[tesseract]` + binary | Not run here |
+RapidOCR (PP-OCR models on ONNX, install extra `.[rapid]`) is the only engine. PaddleOCR and Tesseract were removed
+on 2026-11-11: they had never been run.
 
 Each engine returns `Token`s: text plus a bounding box, a confidence and an optional style.
 
@@ -204,7 +200,6 @@ Las Vegas, NV 89139",
 ```bash
 pip install -e ".[rapid,dev]"        # RapidOCR + pytest
 pip install -e ".[rapid,web]"        # + web UI / API (FastAPI, uvicorn)
-# alternatives: ".[paddle,dev]" or ".[tesseract,dev]" (needs the tesseract binary)
 ```
 
 Requires Python 3.10 or later. Settings can be exported in the shell or written as `KEY=value` lines in `.env` in the working directory. The CLI and the server both read `.env`, and values already set in the shell take precedence.
@@ -220,8 +215,7 @@ Requires Python 3.10 or later. Settings can be exported in the shell or written 
 | `VAX_LLM_HEDGE_SECONDS` | 10 | Resend once if no answer after N s; first reply wins (0 = off) |
 | `VAX_FALLBACK_MODEL` | unset | Stronger model, used when the primary result needs review |
 | `VAX_FALLBACK_BASE_URL` / `_API_KEY` | primary's | Fallback endpoint |
-| `VAX_FALLBACK_VISION` | 0 | 1 = also send page images to the fallback model |
-| `VAX_OCR` | rapid | rapid · paddle · tesseract |
+| `VAX_OCR` | rapid | OCR engine (only `rapid`) |
 | `VAX_DEFAULT_DATE_ORDER` | MDY | Used only when no date in the document is unambiguous |
 | `VAX_EXPANSION_CACHE` | `.vax_cache/expansions.json` | Cache of requested-name definitions ('' = off) |
 | `VAX_SHEET` | unset | Verification workbook updated on every extraction |
@@ -263,8 +257,9 @@ All 46 unit tests pass (`pytest`, 2.2 s, run on 27 October 2026). None of them c
 
 ### Evaluation
 
-- `python -m vaxextract.cli eval --pred preds/ --gold gold/` scores at the event level. It compares (requested name, date given, due date) between `--full` predictions and gold labels.
-- Gold labels are one JSON file per document, with its `targets`, in the same shape as `gold/rubi.json`. Only that one gold file exists so far.
+- `python tools/report_eval.py <report> <preds dir> --docs <folders>` scores the extractor against a kennel report
+  (PetName, Immunization_Type_Name, Expiration_date, optional Document_URL and status). See docs/EXPIRY_RULES.md.
+- The gold-label eval (`cli eval`, `tools/gold.py`) was removed on 2026-11-11: its labels were built on old documents.
 
 ### Latency tools
 
@@ -291,13 +286,11 @@ The biggest open issue is latency. Runs take 7–32 s against a target of about 
 - **Coverage check:** it fires only when a requested name is printed literally on a dated line.
 - **Pet names** are kept exactly as printed (e.g. *Coco Terrasi*).
 - **Mapping quality** depends on the LLM, which belongs to the mapping owners. It should be measured in the eval.
-- **Untested engines:** `PaddleEngine` and `TesseractEngine` have not been run here.
 
 ### Next steps
 
-- [ ] Run Document AI over a sample and have a person verify the results, to build gold labels in `gold/`
 - [ ] Re-measure latency on the paid key (`tools/probe.py`, `tools/latency_split.py`)
-- [ ] Tune the prompt against the eval
+- [ ] Tune the prompt against the kennel-report eval
 - [ ] Run alongside Document AI in shadow mode and choose the escalation policy
 - [ ] Perspective correction for heavily skewed phone photos
 - [ ] Optional: rule-based parser tier for high-volume clean-table templates

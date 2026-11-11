@@ -34,11 +34,11 @@ def test_pipeline_text_layer_with_fake_llm(monkeypatch):
                    + [f"filler line {i}" for i in range(20)])
     seen = {}
 
-    def fake(cfg, text, images=None, targets=None):
+    def fake(cfg, text, targets=None):
         seen["text"] = text
         raw = RawExtraction.model_validate({"pets": [{"name": "Luna", "events": [
             {"raw_name": "Rabies", "kind": "vaccine", "given_date": "10/28/2025", "due_date": "10/28/2026",
-             "matches": targets}]}]})
+             "matches": [{"name": x, "shown_by": "Rabies"} for x in targets]}]}]})
         return raw, {"prompt_tokens": 100, "completion_tokens": 20}
 
     monkeypatch.setattr(llm_mod, "extract", fake)
@@ -56,7 +56,7 @@ def test_fallback_used_when_primary_flagged(monkeypatch):
     pdf = make_pdf(["Patient: Luna", "Rabies 10/28/2025"] + [f"filler {i}" for i in range(20)])
     calls = []
 
-    def fake(cfg, text, images=None, targets=None):
+    def fake(cfg, text, targets=None):
         calls.append(cfg.model)
         events = [] if cfg.model == "small" else [
             {"raw_name": "Rabies", "given_date": "10/28/2025", "due_date": "10/28/2026"}]
@@ -261,7 +261,7 @@ def test_empty_answer_retried_once_without_fallback(monkeypatch):
     answers = [[], [{"raw_name": "Rabies Vaccine 3 Year", "given_date": "05-07-25", "due_date": "05-06-28"}]]
     calls = []
 
-    def fake(cfg, text, images=None, targets=None):
+    def fake(cfg, text, targets=None):
         calls.append(cfg.model)
         return RawExtraction.model_validate({"pets": [{"name": "Lilu", "events": answers[len(calls) - 1]}]}), {}
 
@@ -270,14 +270,52 @@ def test_empty_answer_retried_once_without_fallback(monkeypatch):
     assert calls == ["m", "m"] and [e.rawName for e in res.data.pets[0].events] == ["Rabies Vaccine 3 Year"]
 
 
+def test_missing_pet_retried_once_and_better_answer_kept(monkeypatch):
+    # Mila/Ollie: the model sometimes leaves Mila out although her reminders are printed
+    pdf = make_pdf(["Mila McAuliffe's Reminders", "Lyme Booster | 6/4/2026", "Ollie McAuliffe's Reminders",
+                    "Lyme Vaccine | 1/6/2027"] + [f"filler {i}" for i in range(20)])
+    ollie = {"name": "Ollie", "events": [{"raw_name": "Lyme Vaccine", "due_date": "1/6/2027"}]}
+    mila = {"name": "Mila", "events": [{"raw_name": "Lyme Booster", "due_date": "6/4/2026"}]}
+    answers = [[ollie], [ollie, mila]]
+    calls = []
+
+    def fake(cfg, text, targets=None):
+        calls.append(cfg.model)
+        return RawExtraction.model_validate({"pets": answers[len(calls) - 1]}), {}
+
+    monkeypatch.setattr(llm_mod, "extract", fake)
+    res = extract_bytes(pdf, Config(primary=LlmConfig("u", "k", "m")), today=date(2026, 10, 2))
+    assert calls == ["m", "m"] and [p.name for p in res.data.pets] == ["Ollie", "Mila"]
+    assert not res.meta.needsHumanReview
+
+
 def test_no_retry_when_page_has_no_dates(monkeypatch):
     pdf = make_pdf(["Patient: Lilu", "Thank you for visiting"] + [f"filler {i}" for i in range(20)])
     calls = []
 
-    def fake(cfg, text, images=None, targets=None):
+    def fake(cfg, text, targets=None):
         calls.append(cfg.model)
         return RawExtraction.model_validate({"pets": [{"name": "Lilu", "events": []}]}), {}
 
     monkeypatch.setattr(llm_mod, "extract", fake)
     extract_bytes(pdf, Config(primary=LlmConfig("u", "k", "m")), today=date(2026, 10, 2))
     assert calls == ["m"]
+
+
+
+def test_reads_disagreeing_on_document_type_keep_the_dates_and_flag(monkeypatch):
+    # MIKO-like: the first read calls it a software screen, the retry reads timestamps as due dates
+    pdf = make_pdf(["Vax Verify Results", "DHLPP / FVRCP | Wed 09/09/2026 05:58 AM"] + [f"filler {i}" for i in range(20)])
+    ev = [{"raw_name": "DHLPP / FVRCP", "kind": "vaccine", "due_date": "09/09/2026"}]
+    answers = [{"document_type": "other", "pets": [{"name": "MIKO", "events": ev}]},
+               {"document_type": "vaccine_record", "pets": [{"name": "MIKO", "events": ev}]}]
+    calls = []
+
+    def fake(cfg, text, targets=None):
+        calls.append(1)
+        return RawExtraction.model_validate(answers[len(calls) - 1]), {}
+
+    monkeypatch.setattr(llm_mod, "extract", fake)
+    res = extract_bytes(pdf, Config(primary=LlmConfig("u", "k", "m")), today=date(2026, 10, 2))
+    assert len(calls) == 2 and res.data.pets[0].events and res.meta.needsHumanReview
+    assert any("not a vaccine record?" in r for r in res.meta.reviewReasons)

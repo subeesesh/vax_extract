@@ -1,7 +1,6 @@
 """OpenAI-compatible chat client (works with Gemini, OpenAI, vLLM, Ollama, ...)."""
 from __future__ import annotations
 
-import base64
 import json
 import logging
 import os
@@ -28,7 +27,6 @@ class LlmConfig:
     model: str
     timeout: float = 120.0
     max_tokens: int = 16384  # long multi-page histories overflowed 4096 (truncated JSON)
-    vision: bool = False
     reasoning_effort: Optional[str] = None  # e.g. 'low' for Gemini 3.x / OpenAI reasoning models
     hedge_after: float = 0.0  # >0: send a duplicate request if no answer after this many seconds; first wins
 
@@ -50,14 +48,15 @@ def output_schema(targets: Optional[list[str]] = None) -> dict:
     def obj(props: dict) -> dict:
         return {"type": "object", "properties": props, "required": list(props), "additionalProperties": False}
 
-    match = obj({"name": name, "partial": {"type": "boolean"}, "duration_months": i})
+    match = obj({"name": name, "shown_by": s, "partial": {"type": "boolean"}, "duration_months": i})
     event = obj({"raw_name": {"type": "string"}, "kind": {"type": "string", "enum": ["vaccine", "diagnostic", "other"]},
-                 "given_date": s, "due_date": s, "duration_months": i,
+                 "given_date": s, "due_date": s, "interval_text": s, "duration_months": i,
                  "matches": {"type": "array", "items": match, **({} if targets else {"maxItems": 0})}})
     pet = obj({**{k: s for k in ("name", "species", "breed", "sex", "weight", "color", "microchipNumber")},
                "events": {"type": "array", "items": event}})
     party = obj({"name": s, "address": s, "phone": s, "email": s})
-    return obj({"pets": {"type": "array", "items": pet}, "owner": party,
+    return obj({"document_type": {"type": "string", "enum": ["vaccine_record", "other"]},
+                "pets": {"type": "array", "items": pet}, "owner": party,
                 "clinic": obj({"name": s, "address": s, "phone": s, "email": s, "website": s}),
                 "veterinarian": obj({"name": s, "licenseNumber": s})})
 
@@ -219,21 +218,22 @@ def expand_targets(cfg: LlmConfig, targets: Optional[list[str]]):
     return exp, usage
 
 
-def extract(cfg: LlmConfig, text: str, images: Optional[list[bytes]] = None, targets: Optional[list[str]] = None):
+def cached_expansion(cfg: LlmConfig, targets: Optional[list[str]]) -> dict:
+    """The expansion already written for this target list (no call): {} if there is none."""
+    if not targets:
+        return {}
+    key = (cfg.model, tuple(targets))
+    return _EXPANSIONS.get(key) or _load_cached(key) or {}
+
+
+def extract(cfg: LlmConfig, text: str, targets: Optional[list[str]] = None):
     """-> (RawExtraction, usage dict). One repair retry on invalid JSON."""
     total = {"prompt_tokens": 0, "completion_tokens": 0}
     expansion, usage0 = expand_targets(cfg, targets)
     for k in total:
         total[k] += int(usage0.get(k, 0) or 0)
-    use_imgs = bool(images) and cfg.vision
-    if use_imgs:
-        content = [{"type": "text", "text": user_prompt(text, True, targets, expansion)}] + [
-            {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(b).decode()}}
-            for b in images
-        ]
-    else:
-        content = user_prompt(text, targets=targets, expansion=expansion)
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": content}]
+    messages = [{"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt(text, targets, expansion)}]
     schema = output_schema(targets)
     out, usage = _post(cfg, messages, schema)
     for k in total:

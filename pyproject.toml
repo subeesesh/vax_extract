@@ -15,8 +15,6 @@ dependencies = [
 
 [project.optional-dependencies]
 rapid = ["rapidocr>=3.0", "onnxruntime>=1.17"]
-paddle = ["paddleocr>=2.7", "paddlepaddle>=2.6"]
-tesseract = ["pytesseract>=0.3.10"]
 web = ["fastapi>=0.110", "uvicorn>=0.29", "python-multipart>=0.0.9"]
 dev = ["pytest>=8"]
 
