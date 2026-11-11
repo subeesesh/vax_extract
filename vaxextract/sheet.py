@@ -21,7 +21,7 @@ WIDTHS = {"PetName": 16, "POName": 20, "Immunization_Type_Name": 18, "created_on
           "status": 13, "Document_URL": 40, "Results - Comment": 50, "Verified By": 24, "final_json": 60}
 
 
-OCR_NAMES = {"rapid": "RapidOCR", "paddle": "PaddleOCR", "tesseract": "Tesseract"}
+OCR_NAMES = {"rapid": "RapidOCR"}
 
 
 def verified_by(model: str, ocr_engine: str) -> str:

@@ -245,7 +245,7 @@ def _build_pet(rp: RawPet, order: str, today: date, targets: list[str], lines: l
         reasons = r1 + r2
         if not any(c.isalpha() for c in name):
             reasons.append("name is not a vaccine name (looks like a date or number)")
-        evidence = _clean(e.evidence) or _find_line(name, lines)
+        evidence = _find_line(name, lines)
         if g and g > today + timedelta(days=1) and due_list:
             d, g = g, None
         elif g and g > today + timedelta(days=1) and d is None and g <= today + timedelta(days=366):
@@ -519,13 +519,12 @@ def _rollup(target: str, evs: list[_Ev], today: date) -> Vaccination:
     head = min(dated, key=lambda e: (e.due, e.due_src != "document")) if dated else _latest(chosen)[0]
     extra = []
     # a reminder still in force that falls due before the latest dose's expiry (Leo: 'Canine Lepto 1yr Vaccine' due
-    # 12/04/2026 next to the 3-year 'Distemper+Leptospirosis (DA2PP+L)' row due 12/04/2028): the earlier date, checked
+    # 12/04/2026 next to the 3-year 'Distemper+Leptospirosis (DA2PP+L)' row due 12/04/2028): the earlier date. Not sent
+    # to review: the rule decides it (user, 2026-11-11, Oliver's 'Rabies Vaccination-3 Yr' reminder)
     sooner = [e for e in cur if not e.given and e.due and head.due and today <= e.due
               and (head.due - e.due).days > 31]  # a day or two apart is the same dose's own reminder (Gracie)
     if sooner:
         first = min(sooner, key=lambda e: e.due)
-        extra.append(f"reminder '{first.raw_name}' due {first.due.isoformat()} is before the expiry "
-                     f"{head.due.isoformat()} of '{head.raw_name}'")
         chosen = [first] + chosen
         head = first
     if head.due is None and head.given:

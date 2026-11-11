@@ -34,7 +34,7 @@ def test_pipeline_text_layer_with_fake_llm(monkeypatch):
                    + [f"filler line {i}" for i in range(20)])
     seen = {}
 
-    def fake(cfg, text, images=None, targets=None):
+    def fake(cfg, text, targets=None):
         seen["text"] = text
         raw = RawExtraction.model_validate({"pets": [{"name": "Luna", "events": [
             {"raw_name": "Rabies", "kind": "vaccine", "given_date": "10/28/2025", "due_date": "10/28/2026",
@@ -56,7 +56,7 @@ def test_fallback_used_when_primary_flagged(monkeypatch):
     pdf = make_pdf(["Patient: Luna", "Rabies 10/28/2025"] + [f"filler {i}" for i in range(20)])
     calls = []
 
-    def fake(cfg, text, images=None, targets=None):
+    def fake(cfg, text, targets=None):
         calls.append(cfg.model)
         events = [] if cfg.model == "small" else [
             {"raw_name": "Rabies", "given_date": "10/28/2025", "due_date": "10/28/2026"}]
@@ -261,7 +261,7 @@ def test_empty_answer_retried_once_without_fallback(monkeypatch):
     answers = [[], [{"raw_name": "Rabies Vaccine 3 Year", "given_date": "05-07-25", "due_date": "05-06-28"}]]
     calls = []
 
-    def fake(cfg, text, images=None, targets=None):
+    def fake(cfg, text, targets=None):
         calls.append(cfg.model)
         return RawExtraction.model_validate({"pets": [{"name": "Lilu", "events": answers[len(calls) - 1]}]}), {}
 
@@ -279,7 +279,7 @@ def test_missing_pet_retried_once_and_better_answer_kept(monkeypatch):
     answers = [[ollie], [ollie, mila]]
     calls = []
 
-    def fake(cfg, text, images=None, targets=None):
+    def fake(cfg, text, targets=None):
         calls.append(cfg.model)
         return RawExtraction.model_validate({"pets": answers[len(calls) - 1]}), {}
 
@@ -293,7 +293,7 @@ def test_no_retry_when_page_has_no_dates(monkeypatch):
     pdf = make_pdf(["Patient: Lilu", "Thank you for visiting"] + [f"filler {i}" for i in range(20)])
     calls = []
 
-    def fake(cfg, text, images=None, targets=None):
+    def fake(cfg, text, targets=None):
         calls.append(cfg.model)
         return RawExtraction.model_validate({"pets": [{"name": "Lilu", "events": []}]}), {}
 
@@ -311,7 +311,7 @@ def test_reads_disagreeing_on_document_type_keep_the_dates_and_flag(monkeypatch)
                {"document_type": "vaccine_record", "pets": [{"name": "MIKO", "events": ev}]}]
     calls = []
 
-    def fake(cfg, text, images=None, targets=None):
+    def fake(cfg, text, targets=None):
         calls.append(1)
         return RawExtraction.model_validate(answers[len(calls) - 1]), {}
 

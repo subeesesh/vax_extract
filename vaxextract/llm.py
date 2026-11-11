@@ -1,7 +1,6 @@
 """OpenAI-compatible chat client (works with Gemini, OpenAI, vLLM, Ollama, ...)."""
 from __future__ import annotations
 
-import base64
 import json
 import logging
 import os
@@ -28,7 +27,6 @@ class LlmConfig:
     model: str
     timeout: float = 120.0
     max_tokens: int = 16384  # long multi-page histories overflowed 4096 (truncated JSON)
-    vision: bool = False
     reasoning_effort: Optional[str] = None  # e.g. 'low' for Gemini 3.x / OpenAI reasoning models
     hedge_after: float = 0.0  # >0: send a duplicate request if no answer after this many seconds; first wins
 
@@ -228,21 +226,14 @@ def cached_expansion(cfg: LlmConfig, targets: Optional[list[str]]) -> dict:
     return _EXPANSIONS.get(key) or _load_cached(key) or {}
 
 
-def extract(cfg: LlmConfig, text: str, images: Optional[list[bytes]] = None, targets: Optional[list[str]] = None):
+def extract(cfg: LlmConfig, text: str, targets: Optional[list[str]] = None):
     """-> (RawExtraction, usage dict). One repair retry on invalid JSON."""
     total = {"prompt_tokens": 0, "completion_tokens": 0}
     expansion, usage0 = expand_targets(cfg, targets)
     for k in total:
         total[k] += int(usage0.get(k, 0) or 0)
-    use_imgs = bool(images) and cfg.vision
-    if use_imgs:
-        content = [{"type": "text", "text": user_prompt(text, True, targets, expansion)}] + [
-            {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(b).decode()}}
-            for b in images
-        ]
-    else:
-        content = user_prompt(text, targets=targets, expansion=expansion)
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": content}]
+    messages = [{"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt(text, targets, expansion)}]
     schema = output_schema(targets)
     out, usage = _post(cfg, messages, schema)
     for k in total:

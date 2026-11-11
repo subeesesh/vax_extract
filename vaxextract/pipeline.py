@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Optional
@@ -13,7 +13,7 @@ from . import ingest, llm, ocr
 from .layout import serialize
 from .llm import LlmConfig, LlmError
 from .postprocess import MISSING_PET, NOT_RECORD, build_data
-from .schema import Data, Meta, Result, TokenUsage
+from .schema import Meta, Result, TokenUsage
 
 
 def load_dotenv(path: Path) -> None:
@@ -46,7 +46,6 @@ class Config:
                 e.get("VAX_FALLBACK_BASE_URL", primary.base_url),
                 e.get("VAX_FALLBACK_API_KEY", primary.api_key),
                 e["VAX_FALLBACK_MODEL"],
-                vision=e.get("VAX_FALLBACK_VISION", "0") == "1",
             )
         return cls(primary, fb, e.get("VAX_OCR", "rapid"))
 
@@ -73,8 +72,8 @@ def _score(r: Result):
     return (len(r.meta.reviewReasons), -sum(len(p.events) for p in r.data.pets))
 
 
-def _run(tier: str, lcfg: LlmConfig, text: str, images, today, targets, usage: TokenUsage, meta_base: dict) -> Result:
-    raw, u = llm.extract(lcfg, text, images, targets)
+def _run(tier: str, lcfg: LlmConfig, text: str, today, targets, usage: TokenUsage, meta_base: dict) -> Result:
+    raw, u = llm.extract(lcfg, text, targets)
     _usage(usage, u)
     data, reasons = build_data(raw, text, today, targets, llm.cached_expansion(lcfg, targets))
     meta = Meta(tier=tier, needsHumanReview=bool(reasons), reviewReasons=reasons, **meta_base)
@@ -99,13 +98,13 @@ def extract_bytes(data: bytes, cfg: Config, today: Optional[date] = None,
     usage = TokenUsage()
     result: Optional[Result] = None
     try:
-        result = _run("primary", cfg.primary, text, None, today, targets, usage, meta_base)
+        result = _run("primary", cfg.primary, text, today, targets, usage, meta_base)
         if not cfg.fallback and ((_no_events(result) and D.dates_in_text(text, D.default_order()))
                                  or _missing_pet(result)):
             # the model sometimes answers with zero events for a page that plainly lists dated vaccines (same
             # text, same prompt, temperature 0): one more try, keep the better answer (a configured fallback
             # tier already handles this case)
-            again = _run("primary", cfg.primary, text, None, today, targets, usage, meta_base)
+            again = _run("primary", cfg.primary, text, today, targets, usage, meta_base)
             if _not_record(result) != _not_record(again):
                 # one read says it is no vaccine record (a software screen), the other found vaccines: keep the
                 # vaccines, but a person decides
@@ -119,9 +118,8 @@ def extract_bytes(data: bytes, cfg: Config, today: Optional[date] = None,
             raise
         primary_err = str(e)
     if cfg.fallback and (result is None or result.meta.needsHumanReview):
-        images = ingest.render_page_images(data) if cfg.fallback.vision else None
         try:
-            fb = _run("fallback", cfg.fallback, text, images, today, targets, usage, meta_base)
+            fb = _run("fallback", cfg.fallback, text, today, targets, usage, meta_base)
             if result is None or _score(fb) < _score(result):
                 result = fb
         except LlmError:

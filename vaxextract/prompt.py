@@ -48,12 +48,10 @@ def _target_line(t: str, expansion: dict | None) -> str:
     return f"- {t} = " + " | ".join(parts)
 
 
-def user_prompt(text: str, with_images: bool = False, targets: list[str] | None = None,
-                expansion: dict | None = None) -> str:
+def user_prompt(text: str, targets: list[str] | None = None, expansion: dict | None = None) -> str:
     head = ""
     if targets:
         label = "REQUESTED VACCINE NAMES (= the diseases each stands for):" if expansion else "REQUESTED VACCINE NAMES:"
         head = label + "\n" + "\n".join(_target_line(t, expansion) for t in targets) + "\n\n"
-    head += "Document OCR text (may contain errors"
-    head += "; page images are attached, trust them where they disagree):" if with_images else "):"
+    head += "Document OCR text (may contain errors):"
     return f"{head}\n\n{text}"

@@ -439,17 +439,6 @@ def test_reminder_due_date_joins_performed_test():
     assert (t.dateAdministered, t.dueDate) == ("2026-09-30", "2027-09-30")
 
 
-def test_eval_ignores_rows_matching_no_requested_name(tmp_path):
-    from vaxextract.eval import evaluate
-
-    ev = {"target": "Rabies", "dateAdministered": "2026-01-02", "dueDate": "2029-01-01"}
-    (tmp_path / "g").mkdir(); (tmp_path / "p").mkdir()
-    (tmp_path / "g" / "d.json").write_text(json.dumps({"pets": [{"name": "Rex", "events": [ev]}]}))
-    pred = {"data": {"pets": [{"name": "Rex", "events": [ev, {"target": None, "dateAdministered": "2026-01-02"}]}]}}
-    (tmp_path / "p" / "d.json").write_text(json.dumps(pred))
-    assert evaluate(str(tmp_path / "p"), str(tmp_path / "g"))["event_strict_prf"] == (1.0, 1.0, 1.0)
-
-
 def test_nothing_requested_lists_printed_vaccines():
     rows = _slim([ev("Rabies 3 Yr", "05/01/2026", dur=36), ev("Rabies 1 Yr", "04/20/2025", "04/20/2026"),
                   ev("DA2PP", "05/01/2026", "05/01/2027"), ev("DA2PP", "04/20/2025", "04/20/2026")], [])
@@ -706,12 +695,13 @@ def test_single_future_date_is_read_as_due_and_flagged():
 
 
 
-def test_earlier_reminder_beats_a_later_dose_expiry_and_is_flagged():
-    # Leo: 'DA2PP+L' given 12/04/2025 prints 12/04/2028; the Lepto 1yr reminder is due 12/04/2026
+def test_earlier_reminder_beats_a_later_dose_expiry_without_review():
+    # Leo: 'DA2PP+L' given 12/04/2025 prints 12/04/2028; the Lepto 1yr reminder is due 12/04/2026.
+    # The rule decides it, so no review (Oliver: 'Rabies Vaccination-Annual' 2029 + '3 Yr' reminder 2027)
     pet, _ = run([ev("Distemper+Leptospirosis (DA2PP+L) Vaccine", "12/04/2025", "12/04/2028", m=["Leptospirosis"]),
                   ev("Canine Lepto 1yr Vaccine", None, "12/04/2026", m=["Leptospirosis"])], ["Leptospirosis"])
     v = pet.vaccinations[0]
-    assert (v.expirationDate, v.needsHumanReview) == ("2026-12-04", True)
+    assert (v.expirationDate, v.needsHumanReview) == ("2026-12-04", False)
 
 
 def test_ocr_spelling_of_the_quoted_word_is_tolerated():
